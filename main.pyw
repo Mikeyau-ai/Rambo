@@ -328,7 +328,8 @@ class RamBo(tk.Tk):
             ("command", "COMMAND",   0, tk.W),
         ]
         for cid, heading, width, anchor in col_cfg:
-            self.startup_tree.heading(cid, text=heading)
+            self.startup_tree.heading(cid, text=heading,
+                                      command=lambda c=cid: self._startup_sort(c))
             if width:
                 self.startup_tree.column(cid, width=width, minwidth=55, anchor=anchor)
             else:
@@ -336,10 +337,15 @@ class RamBo(tk.Tk):
                 self.startup_tree.column(cid, width=300, minwidth=100,
                                          anchor=anchor, stretch=True)
 
+        self._startup_sort_col = None
+        self._startup_sort_rev = False
+
         # Source tags (lower priority)
-        self.startup_tree.tag_configure("src_hkcu", foreground=C['blue'])
-        self.startup_tree.tag_configure("src_hklm", foreground=C['yellow'])
-        self.startup_tree.tag_configure("src_task", foreground=C['orange'])
+        self.startup_tree.tag_configure("src_hkcu",    foreground=C['blue'])
+        self.startup_tree.tag_configure("src_hklm",    foreground=C['yellow'])
+        self.startup_tree.tag_configure("src_task",    foreground=C['orange'])
+        self.startup_tree.tag_configure("src_folder",  foreground=C['blue'])
+        self.startup_tree.tag_configure("src_common",  foreground=C['yellow'])
         # disabled tag overrides source colour
         self.startup_tree.tag_configure("disabled", foreground=C['dim'])
 
@@ -400,12 +406,10 @@ class RamBo(tk.Tk):
         self.startup_tree.delete(*self.startup_tree.get_children())
         for i, entry in enumerate(results):
             src = entry['source']
-            if src == 'HKCU':
-                src_tag = 'src_hkcu'
-            elif src == 'HKLM':
-                src_tag = 'src_hklm'
-            else:
-                src_tag = 'src_task'
+            src_tag = {
+                'HKCU': 'src_hkcu', 'HKLM': 'src_hklm',
+                'Task': 'src_task', 'Folder': 'src_folder', 'Common': 'src_common',
+            }.get(src, 'src_hkcu')
             tags = (src_tag, 'disabled') if not entry['enabled'] else (src_tag,)
             values = (
                 entry['name'],
@@ -416,6 +420,24 @@ class RamBo(tk.Tk):
             self.startup_tree.insert('', tk.END, iid=str(i), values=values, tags=tags)
         self.startup_summary_lbl.config(text=f"{len(results)} found")
         self.status_var.set("Startup scan complete")
+
+    def _startup_sort(self, col):
+        col_idx = {"name": 0, "source": 1, "status": 2, "command": 3}[col]
+        reverse = (self._startup_sort_col == col) and not self._startup_sort_rev
+        items = [(self.startup_tree.set(iid, col), iid)
+                 for iid in self.startup_tree.get_children()]
+        items.sort(key=lambda x: x[0].lower(), reverse=reverse)
+        for rank, (_, iid) in enumerate(items):
+            self.startup_tree.move(iid, '', rank)
+        self._startup_sort_col = col
+        self._startup_sort_rev = reverse
+        # Update heading arrows
+        for c in ("name", "source", "status", "command"):
+            heading = {"name": "NAME", "source": "SOURCE",
+                       "status": "STATUS", "command": "COMMAND"}[c]
+            arrow = (" ▲" if not reverse else " ▼") if c == col else ""
+            self.startup_tree.heading(c, text=heading + arrow,
+                                      command=lambda cc=c: self._startup_sort(cc))
 
     def _set_startup_enabled(self, enable: bool):
         # Snapshot entries on the main thread to avoid iid/results race
