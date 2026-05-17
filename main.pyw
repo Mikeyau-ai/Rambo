@@ -345,8 +345,8 @@ class RamBo(tk.Tk):
                            command=self.startup_tree.yview)
         self.startup_tree.configure(yscrollcommand=sb.set)
 
-        self.startup_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         sb.pack(side=tk.RIGHT, fill=tk.Y)
+        self.startup_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         self.startup_tree.bind("<Button-1>",         self._on_startup_click)
         self.startup_tree.bind("<Control-Button-1>", self._on_startup_ctrl_click)
