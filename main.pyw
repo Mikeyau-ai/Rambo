@@ -385,8 +385,13 @@ class RamBo(tk.Tk):
         try:
             results = scan_startup()
             self.after(0, self._startup_scan_done, results)
-        except Exception:
-            self.after(0, self._startup_scan_done, [])
+        except Exception as exc:
+            self.after(0, self._startup_scan_error, str(exc))
+
+    def _startup_scan_error(self, msg: str):
+        self._startup_scanning = False
+        self.startup_scan_btn.config(state=tk.NORMAL)
+        self.status_var.set(f"Startup scan failed: {msg}")
 
     def _startup_scan_done(self, results):
         self._startup_scanning = False
@@ -413,26 +418,38 @@ class RamBo(tk.Tk):
         self.status_var.set("Startup scan complete")
 
     def _set_startup_enabled(self, enable: bool):
+        # Snapshot entries on the main thread to avoid iid/results race
+        entries = [self._startup_results[int(iid)]
+                   for iid in self.startup_tree.selection()
+                   if int(iid) < len(self._startup_results)]
+        if not entries:
+            return
         self.startup_disable_btn.config(state=tk.DISABLED)
         self.startup_enable_btn.config(state=tk.DISABLED)
-        selection = self.startup_tree.selection()
-        count = 0
-        failed = []
-        for iid in selection:
-            entry = self._startup_results[int(iid)]
-            try:
-                set_enabled(entry, enable)
-                count += 1
-            except StartupAccessError:
-                failed.append(entry['name'])
-        if failed:
-            names = "\n".join(f"  • {n}" for n in failed)
-            messagebox.showwarning(
-                "Admin required",
-                f"The following item(s) require administrator privileges to modify:\n\n{names}"
-            )
-        self.status_var.set(f"{'Enabled' if enable else 'Disabled'} {count} item(s)")
-        self._start_startup_scan()
+        self.status_var.set(f"{'Enabling' if enable else 'Disabling'} {len(entries)} item(s)…")
+
+        def _worker():
+            count = 0
+            failed = []
+            for entry in entries:
+                try:
+                    set_enabled(entry, enable)
+                    count += 1
+                except StartupAccessError:
+                    failed.append(entry['name'])
+            self.after(0, _done, count, failed)
+
+        def _done(count, failed):
+            if failed:
+                names = "\n".join(f"  • {n}" for n in failed)
+                messagebox.showwarning(
+                    "Admin required",
+                    f"The following item(s) require administrator privileges to modify:\n\n{names}"
+                )
+            self.status_var.set(f"{'Enabled' if enable else 'Disabled'} {count} item(s)")
+            self._start_startup_scan()
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _on_startup_select(self):
         n = len(self.startup_tree.selection())
