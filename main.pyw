@@ -121,7 +121,9 @@ class RamBo(tk.Tk):
         self.configure(bg=C['bg'])
         self.minsize(828, 440)
         self._scanning      = False
-        self._trimming      = False
+        self._trimming          = False
+        self._startup_scanning  = False
+        self._startup_results   = []
         self._all_results   = []
         self._live          = False
         self._live_after_id = None
@@ -351,11 +353,85 @@ class RamBo(tk.Tk):
         self.startup_tree.bind("<Button-1>",         self._on_startup_click)
         self.startup_tree.bind("<Control-Button-1>", self._on_startup_ctrl_click)
 
-    def _on_startup_click(self, event): pass
-    def _on_startup_ctrl_click(self, event): pass
-    def _start_startup_scan(self): pass
-    def _set_startup_enabled(self, enable: bool): pass
-    def _on_startup_select(self): pass
+    def _on_startup_click(self, event):
+        iid = self.startup_tree.identify_row(event.y)
+        if not iid:
+            self.startup_tree.selection_set([])
+            self._on_startup_select()
+            return
+        self.startup_tree.selection_set(iid)
+        self._on_startup_select()
+
+    def _on_startup_ctrl_click(self, event):
+        iid = self.startup_tree.identify_row(event.y)
+        if not iid:
+            return "break"
+        if iid in self.startup_tree.selection():
+            self.startup_tree.selection_remove(iid)
+        else:
+            self.startup_tree.selection_add(iid)
+        self._on_startup_select()
+        return "break"
+
+    def _start_startup_scan(self):
+        if self._startup_scanning:
+            return
+        self._startup_scanning = True
+        self.startup_scan_btn.config(state=tk.DISABLED)
+        self.status_var.set("Scanning startup entries…")
+        threading.Thread(target=self._do_startup_scan, daemon=True).start()
+
+    def _do_startup_scan(self):
+        try:
+            results = scan_startup()
+            self.after(0, self._startup_scan_done, results)
+        except Exception:
+            self.after(0, self._startup_scan_done, [])
+
+    def _startup_scan_done(self, results):
+        self._startup_scanning = False
+        self.startup_scan_btn.config(state=tk.NORMAL)
+        self._startup_results = results
+        self.startup_tree.delete(*self.startup_tree.get_children())
+        for i, entry in enumerate(results):
+            src = entry['source']
+            if src == 'HKCU':
+                src_tag = 'src_hkcu'
+            elif src == 'HKLM':
+                src_tag = 'src_hklm'
+            else:
+                src_tag = 'src_task'
+            tags = (src_tag, 'disabled') if not entry['enabled'] else (src_tag,)
+            values = (
+                entry['name'],
+                entry['source'],
+                'Enabled' if entry['enabled'] else 'Disabled',
+                entry['command'],
+            )
+            self.startup_tree.insert('', tk.END, iid=str(i), values=values, tags=tags)
+        self.startup_summary_lbl.config(text=f"{len(results)} found")
+        self.status_var.set("Startup scan complete")
+
+    def _set_startup_enabled(self, enable: bool):
+        selection = self.startup_tree.selection()
+        count = 0
+        for iid in selection:
+            entry = self._startup_results[int(iid)]
+            try:
+                set_enabled(entry, enable)
+                count += 1
+            except StartupAccessError:
+                messagebox.showwarning(
+                    "Admin required",
+                    "This item requires administrator privileges to modify.")
+        self.status_var.set(f"{'Enabled' if enable else 'Disabled'} {count} item(s)")
+        self._start_startup_scan()
+
+    def _on_startup_select(self):
+        n = len(self.startup_tree.selection())
+        state = tk.NORMAL if n > 0 else tk.DISABLED
+        self.startup_disable_btn.config(state=state)
+        self.startup_enable_btn.config(state=state)
 
     def _build_statusbar(self):
         bar = tk.Frame(self, bg=C['panel'], pady=6, padx=20)
