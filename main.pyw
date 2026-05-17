@@ -413,17 +413,24 @@ class RamBo(tk.Tk):
         self.status_var.set("Startup scan complete")
 
     def _set_startup_enabled(self, enable: bool):
+        self.startup_disable_btn.config(state=tk.DISABLED)
+        self.startup_enable_btn.config(state=tk.DISABLED)
         selection = self.startup_tree.selection()
         count = 0
+        failed = []
         for iid in selection:
             entry = self._startup_results[int(iid)]
             try:
                 set_enabled(entry, enable)
                 count += 1
             except StartupAccessError:
-                messagebox.showwarning(
-                    "Admin required",
-                    "This item requires administrator privileges to modify.")
+                failed.append(entry['name'])
+        if failed:
+            names = "\n".join(f"  • {n}" for n in failed)
+            messagebox.showwarning(
+                "Admin required",
+                f"The following item(s) require administrator privileges to modify:\n\n{names}"
+            )
         self.status_var.set(f"{'Enabled' if enable else 'Disabled'} {count} item(s)")
         self._start_startup_scan()
 
