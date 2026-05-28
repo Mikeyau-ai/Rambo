@@ -47,6 +47,7 @@ SYSTEM_NAMES = {
 ISSUE_ORDER = {
     'Zombie': 0, 'Not Responding': 1, 'Suspended': 2,
     'Dupe · Main': 3, 'Dupe · Child': 4,
+    '—': 5,   # clean processes sort after all issues
 }
 
 # tag → text colour
@@ -600,6 +601,10 @@ class RamBo(tk.Tk):
                         issues.append(self._make(
                             name, pid, mem, issue, tag, role, count, is_system))
 
+                    else:
+                        issues.append(self._make(
+                            name, pid, mem, '—', 'clean', '—', 1, is_system))
+
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     pass
 
@@ -618,9 +623,9 @@ class RamBo(tk.Tk):
         self._scanning = False
         self.scan_btn.config(state=tk.NORMAL, text="▶  SCAN")
         self.trim_all_btn.config(state=tk.NORMAL)
-        if not self._all_results:
-            self.status_var.set("No issues found — system looks clean")
-            self.summary_var.set("")
+        has_issues = any(r['issue'] != '—' for r in self._all_results)
+        if self._all_results and not has_issues:
+            self.status_var.set("No issues found — system looks clean ✓")
         if self._live:
             self.status_var.set("● Live · next refresh in 5s")
         self._update_ram()
@@ -699,6 +704,15 @@ class RamBo(tk.Tk):
             self.tree.move(k, '', i)
         self._sort_col = col
         self._sort_rev = rev
+
+        _labels = {
+            "process": "PROCESS NAME", "pid": "PID", "memory": "MEMORY",
+            "issue": "ISSUE", "role": "ROLE", "instances": "INSTANCES",
+        }
+        for c, label in _labels.items():
+            arrow = (" ▲" if not rev else " ▼") if c == col else ""
+            self.tree.heading(c, text=label + arrow,
+                              command=lambda cc=c: self._sort(cc))
 
     # ── Selection ──────────────────────────────────────────────────────────────
     def _on_select(self, _=None):
