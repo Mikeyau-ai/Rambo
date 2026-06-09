@@ -3,6 +3,7 @@ from tkinter import ttk, messagebox
 import psutil
 from collections import defaultdict
 import threading
+import time
 import ctypes
 from ctypes import wintypes
 
@@ -26,6 +27,7 @@ C = {
     'yellow':   '#e0a040',
     'orange':   '#e07840',
     'blue':     '#5296e0',
+    'purple':   '#b06ed8',
     'select':   '#1a3a5c',
     'warn':     '#c0392b',
 }
@@ -47,7 +49,8 @@ SYSTEM_NAMES = {
 ISSUE_ORDER = {
     'Zombie': 0, 'Not Responding': 1, 'Suspended': 2,
     'Dupe · Main': 3, 'Dupe · Child': 4,
-    '—': 5,   # clean processes sort after all issues
+    'Orphan': 5,
+    '—': 6,   # clean processes sort after all issues
 }
 
 # tag → text colour
@@ -57,6 +60,7 @@ TAG_COLOR = {
     'suspended':  '#5a5a5a',
     'dup_main':   '#e0c040',
     'dup_child':  '#8a7820',
+    'orphan':     '#b06ed8',
 }
 
 
@@ -188,6 +192,7 @@ class RamBo(tk.Tk):
         self.f_hung      = tk.BooleanVar(value=True)
         self.f_zombies   = tk.BooleanVar(value=True)
         self.f_suspended = tk.BooleanVar(value=True)
+        self.f_orphans   = tk.BooleanVar(value=True)
         self.f_sys       = tk.BooleanVar(value=True)
 
         for label, var, color in [
@@ -195,6 +200,7 @@ class RamBo(tk.Tk):
             ("Not Responding", self.f_hung,      C['orange']),
             ("Zombies",        self.f_zombies,   C['red']),
             ("Suspended",      self.f_suspended, C['dim']),
+            ("Orphans",        self.f_orphans,   C['purple']),
             ("|  Hide System", self.f_sys,       C['dim']),
         ]:
             tk.Checkbutton(bar, text=label, variable=var,
@@ -554,8 +560,10 @@ class RamBo(tk.Tk):
         issues      = []
         name_groups = defaultdict(list)
         hung_pids   = get_hung_pids()
+        _now        = time.time()
+        _live_pids  = {p.pid for p in psutil.process_iter(['pid'])}
 
-        for proc in psutil.process_iter(['pid', 'name', 'status', 'memory_info', 'ppid']):
+        for proc in psutil.process_iter(['pid', 'name', 'status', 'memory_info', 'ppid', 'create_time']):
             try:
                 name_groups[proc.info['name'].lower()].append(proc)
             except (psutil.NoSuchProcess, psutil.AccessDenied):
@@ -600,6 +608,12 @@ class RamBo(tk.Tk):
 
                         issues.append(self._make(
                             name, pid, mem, issue, tag, role, count, is_system))
+
+                    elif (not is_system and ppid > 4
+                          and ppid not in _live_pids
+                          and (_now - proc.info.get('create_time', _now)) >= 12 * 3600):
+                        issues.append(self._make(
+                            name, pid, mem, 'Orphan', 'orphan', '—', 1, is_system))
 
                     else:
                         issues.append(self._make(
@@ -666,6 +680,8 @@ class RamBo(tk.Tk):
             if r['issue'] == 'Zombie'         and not self.f_zombies.get():
                 continue
             if r['issue'] == 'Suspended'      and not self.f_suspended.get():
+                continue
+            if r['issue'] == 'Orphan'         and not self.f_orphans.get():
                 continue
 
             count_str = str(r['count']) if 'Dupe' in r['issue'] else '—'
