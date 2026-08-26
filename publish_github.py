@@ -57,26 +57,56 @@ def check_prerequisites():
     return True
 
 
-def publish(tag, zip_path):
-    """Create the release, or replace the asset if the tag already exists."""
-    notes = (
-        f"RamBo {tag}\n\n"
+def changelog(tag):
+    """Commit subjects since the previous tag, as markdown bullets."""
+    previous = subprocess.run(
+        ['git', 'describe', '--tags', '--abbrev=0', tag + '^'],
+        capture_output=True, text=True)
+    if previous.returncode != 0 or not previous.stdout.strip():
+        # First release: don't replay the entire history as a changelog.
+        return '- First release.'
+    span = f'{previous.stdout.strip()}..{tag}'
+    log = subprocess.run(['git', 'log', span, '--no-merges', '--pretty=%s'],
+                         capture_output=True, text=True)
+    lines = [l.strip() for l in log.stdout.splitlines() if l.strip()]
+    return "\n".join('- ' + l for l in lines[:15]) or '- Maintenance release.'
+
+
+def build_notes(tag):
+    """Release body: changelog first, then the standing install boilerplate.
+
+    The `---` rule matters — updater.note_lines() stops there, so the in-app
+    update prompt shows what changed rather than install instructions the
+    user has already followed."""
+    return (
+        f"## What's new\n\n{changelog(tag)}\n\n"
+        "---\n\n"
         "Download `RamBo.zip`, extract anywhere, and run `RamBo.exe`.\n\n"
         "The build is unsigned, so Windows SmartScreen will show "
         "\"Windows protected your PC\" on first run — click **More info** "
         "then **Run anyway**."
     )
-    created = run(['release', 'create', tag, zip_path,
-                   '--title', f'RamBo {tag}', '--notes', notes])
-    if created.returncode == 0:
-        print(f"  Created release {tag}")
-    else:
-        # Most likely cause is that the tag already exists; replace the asset.
-        print(f"  Release {tag} exists — replacing its asset")
+
+
+def publish(tag, zip_path):
+    """Create the release, or update it in place if the tag already exists."""
+    notes = build_notes(tag)
+
+    if run(['release', 'view', tag]).returncode == 0:
+        print(f"  Release {tag} already exists — updating asset and notes")
         uploaded = run(['release', 'upload', tag, zip_path, '--clobber'])
-        if uploaded.returncode != 0:
-            print(created.stderr.strip() or uploaded.stderr.strip())
+        edited = run(['release', 'edit', tag, '--notes', notes])
+        if uploaded.returncode != 0 or edited.returncode != 0:
+            print("  " + (uploaded.stderr.strip() or edited.stderr.strip()))
             return False
+    else:
+        created = run(['release', 'create', tag, zip_path,
+                       '--title', f'RamBo {tag}', '--notes', notes])
+        if created.returncode != 0:
+            # Report the real reason rather than assuming the tag existed.
+            print("  " + (created.stderr.strip() or 'gh release create failed'))
+            return False
+        print(f"  Created release {tag}")
 
     view = run(['repo', 'view', '--json', 'nameWithOwner', '-q', '.nameWithOwner'])
     slug = view.stdout.strip()

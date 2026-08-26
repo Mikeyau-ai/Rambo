@@ -110,12 +110,21 @@ class UpdateInfo:
         return self.size / (1024 * 1024)
 
     def note_lines(self):
-        """The release body as plain-text bullets for a Tk message box."""
+        """The changelog as plain-text bullets for a Tk message box.
+
+        publish_github.py puts the standing install/SmartScreen boilerplate
+        below a `---` rule, so stop there: the update prompt should say what
+        changed, not repeat instructions the user has already followed."""
         out = []
         for raw in (self.notes or '').splitlines():
-            line = raw.strip().lstrip('-*').strip()
+            line = raw.strip()
+            if line.startswith('---'):
+                break
+            if line.startswith('#'):            # section headings
+                continue
+            line = line.lstrip('-*').strip()
             line = line.replace('**', '').replace('__', '').replace('`', '')
-            if not line or line.lower().startswith('rambo v'):
+            if not line:
                 continue
             out.append(line)
         return out[:12]
