@@ -1,0 +1,17 @@
+# Build output
+build/
+dist/
+*.spec.bak
+
+# Agent tooling scratch state (brainstorm servers, pid files)
+.superpowers/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Secrets — never commit these
+credentials.json
+token.json
+.drive_release.json
+github_token.txt
