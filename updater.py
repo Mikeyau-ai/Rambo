@@ -29,7 +29,7 @@ from pathlib import Path
 # The public GitHub repo whose Releases host the build. Must be PUBLIC — the
 # client checks anonymously and a private repo 404s without a token.
 # publish_github.py imports this so there's a single source of truth.
-GITHUB_REPO = os.getenv('RAMBO_UPDATE_REPO', 'Mikeyau-ai/RamBo')
+GITHUB_REPO = os.getenv('RAMBO_UPDATE_REPO', 'Mikeyau-ai/Rambo')
 
 _API_LATEST = f'https://api.github.com/repos/{GITHUB_REPO}/releases/latest'
 _ASSET_NAME = 'RamBo.zip'
