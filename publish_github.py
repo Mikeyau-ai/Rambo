@@ -3,20 +3,22 @@ Publish the built app as a GitHub release asset.
 
 The download link people use is:
 
-    https://github.com/<owner>/<repo>/releases/latest/download/RamBo.zip
+    https://github.com/<owner>/<repo>/releases/latest/download/RamBo-Setup.exe
 
 That URL is permanent and always resolves to the newest release, so it can be
-posted once and never revisited. Bumping APP_VERSION in main.pyw and rebuilding
+posted once and never revisited. RamBo.zip is uploaded alongside it because
+updater.py downloads that asset by name to apply in-app updates. Bumping APP_VERSION in main.pyw and rebuilding
 is all it takes to update what that link serves.
 
 Requires the GitHub CLI, authenticated once:
     winget install GitHub.cli
     gh auth login
 """
+import os
 import subprocess
 import sys
 
-from package import get_version, make_zip
+from package import SETUP_PATH, get_version, make_zip
 from updater import GITHUB_REPO      # single source of truth for the repo
 
 GH = 'gh'
@@ -81,26 +83,31 @@ def build_notes(tag):
     return (
         f"## What's new\n\n{changelog(tag)}\n\n"
         "---\n\n"
-        "Download `RamBo.zip`, extract anywhere, and run `RamBo.exe`.\n\n"
-        "The build is unsigned, so Windows SmartScreen will show "
-        "\"Windows protected your PC\" on first run — click **More info** "
-        "then **Run anyway**."
+        "Download `RamBo-Setup.exe` and run it. It installs for the current "
+        "user only, so there is no admin prompt.\n\n"
+        "The installer is unsigned, so Windows SmartScreen will show "
+        "\"Windows protected your PC\" — click **More info** then "
+        "**Run anyway**.\n\n"
+        "`RamBo.zip` is the same build as a plain archive, used by RamBo's "
+        "own updater. Downloaded by hand it must be extracted in full before "
+        "running `RamBo.exe` — launching it from inside the zip fails "
+        "with \"Failed to load Python DLL\"."
     )
 
 
-def publish(tag, zip_path):
+def publish(tag, assets):
     """Create the release, or update it in place if the tag already exists."""
     notes = build_notes(tag)
 
     if run(['release', 'view', tag]).returncode == 0:
-        print(f"  Release {tag} already exists — updating asset and notes")
-        uploaded = run(['release', 'upload', tag, zip_path, '--clobber'])
+        print(f"  Release {tag} already exists — updating assets and notes")
+        uploaded = run(['release', 'upload', tag, *assets, '--clobber'])
         edited = run(['release', 'edit', tag, '--notes', notes])
         if uploaded.returncode != 0 or edited.returncode != 0:
             print("  " + (uploaded.stderr.strip() or edited.stderr.strip()))
             return False
     else:
-        created = run(['release', 'create', tag, zip_path,
+        created = run(['release', 'create', tag, *assets,
                        '--title', f'RamBo {tag}', '--notes', notes])
         if created.returncode != 0:
             # Report the real reason rather than assuming the tag existed.
@@ -122,8 +129,13 @@ def main():
         print("  Skipping release.")
         return 0
     tag = 'v' + get_version()
-    zip_path = make_zip()
-    return 0 if publish(tag, zip_path) else 1
+    # The zip still ships: updater.py fetches it by name for in-app updates.
+    assets = [make_zip()]
+    if os.path.exists(SETUP_PATH):
+        assets.insert(0, SETUP_PATH)
+    else:
+        print("  No dist/RamBo-Setup.exe — releasing the zip only.")
+    return 0 if publish(tag, assets) else 1
 
 
 if __name__ == '__main__':

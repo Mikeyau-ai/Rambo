@@ -8,6 +8,7 @@ import sys
 import os
 import subprocess
 import ctypes
+import math
 from ctypes import wintypes
 
 # Resolve resource path — works both from source and frozen (PyInstaller)
@@ -20,11 +21,30 @@ try:
 except Exception:
     pass
 
+# psutil's Process.ppid() takes a fresh system-wide snapshot per call on
+# Windows, so reading it for every process costs seconds. ppid_map() gets the
+# whole table in one call. It is private, hence the guarded import and the
+# per-process fallback if a future psutil moves it.
+try:
+    from psutil._pswindows import ppid_map as _ppid_map
+except ImportError:
+    def _ppid_map():
+        """Fallback: {pid: ppid} the slow way."""
+        out = {}
+        for proc in psutil.process_iter(['pid', 'ppid']):
+            try:
+                out[proc.pid] = proc.info['ppid'] or 0
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        return out
+
+
 from startup import scan_startup, set_enabled, StartupAccessError
 import updater
+import sounds
 
 # Single source of truth for the version; the release scripts parse this.
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 
 # ── Palette ────────────────────────────────────────────────────────────────────
 C = {
@@ -64,6 +84,14 @@ def shade(hex_colour, factor):
     rgb = [int(h[i:i + 2], 16) for i in (0, 2, 4)]
     return '#%02x%02x%02x' % tuple(
         max(0, min(255, int(v * factor))) for v in rgb)
+
+
+def lerp(a, b, t):
+    """Blend two #rrggbb colours; t=0 gives a, t=1 gives b."""
+    a, b = a.lstrip('#'), b.lstrip('#')
+    return '#%02x%02x%02x' % tuple(
+        round(int(a[i:i + 2], 16) + (int(b[i:i + 2], 16) - int(a[i:i + 2], 16)) * t)
+        for i in (0, 2, 4))
 
 
 def dark_titlebar(window):
@@ -166,6 +194,95 @@ class HoverButton(tk.Button):
         self._sync()
 
 
+# ── Filter chip help ──────────────────────────────────────────────────────────
+# Shown on hover. Each entry describes what _find_issues actually tests for,
+# so the wording and the detection cannot drift apart unnoticed.
+CHIP_HELP = {
+    'dupes': """Two or more processes running the same executable.
+
+Main is the top of the tree - its parent is not another copy. Child processes were spawned by it, so killing a Main usually takes the whole application with it.""",
+
+    'hung': """The process owns a visible window that has stopped answering Windows messages - the same state Task Manager calls "Not responding".
+
+Often temporary: an app busy with a long operation recovers on its own.""",
+
+    'zombie': """The process has terminated, but Windows has not released its entry yet - usually because something still holds an open handle to it.
+
+It is running no code and holding no memory.""",
+
+    'suspended': """Every thread in the process is suspended, so it is using no CPU at all.
+
+Normal for Store apps that Windows has parked in the background; worth a look on an ordinary desktop program.""",
+
+    'orphan': """A non-system process whose parent no longer exists, and which has been running for more than 12 hours.
+
+Typically a leftover helper, installer or updater that was never cleaned up.""",
+
+    'system': """Hides Windows components that legitimately run many copies of themselves - svchost.exe, conhost.exe, RuntimeBroker.exe and similar.
+
+Leave this on unless you are deliberately hunting a system process: without it the Duplicates list is mostly Windows.""",
+}
+
+
+class Tooltip:
+    """Delayed hover tooltip, styled to match the dark UI.
+
+    Tk ships no tooltip widget. This is a borderless Toplevel placed under the
+    target after a short delay, torn down on leave or click. Bindings are added
+    with add="+" so they stack on top of whatever the widget already binds.
+    """
+
+    def __init__(self, widget, text, delay=450):
+        self.widget, self.text, self.delay = widget, text, delay
+        self._after_id = None
+        self._tip = None
+        widget.bind("<Enter>", self._schedule, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+        widget.bind("<Button-1>", self._hide, add="+")
+
+    def _schedule(self, _=None):
+        self._cancel()
+        self._after_id = self.widget.after(self.delay, self._show)
+
+    def _cancel(self):
+        if self._after_id is not None:
+            try:
+                self.widget.after_cancel(self._after_id)
+            except Exception:
+                pass
+            self._after_id = None
+
+    def _show(self):
+        self._after_id = None
+        if self._tip is not None or not self.widget.winfo_viewable():
+            return
+        tip = self._tip = tk.Toplevel(self.widget)
+        tip.wm_overrideredirect(True)          # no frame, no title bar
+        tip.configure(bg=C['border'])          # 1px border via the packing pad
+        tk.Label(tip, text=self.text, justify=tk.LEFT, font=FONT_UI,
+                 bg=C['panel'], fg=C['text'], padx=10, pady=7,
+                 wraplength=330).pack(padx=1, pady=1)
+        tip.update_idletasks()
+
+        x = self.widget.winfo_rootx()
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 6
+        # Nudge back on-screen when the chip sits near the right edge.
+        overshoot = (x + tip.winfo_width()) - (self.widget.winfo_screenwidth() - 8)
+        if overshoot > 0:
+            x -= overshoot
+        tip.wm_geometry(f"+{max(8, x)}+{y}")
+        try:
+            tip.attributes('-topmost', True)
+        except tk.TclError:
+            pass
+
+    def _hide(self, _=None):
+        self._cancel()
+        if self._tip is not None:
+            self._tip.destroy()
+            self._tip = None
+
+
 class FilterChip(tk.Label):
     """Click-to-toggle filter pill — replaces Tk's checkbox, which looks
     out of place on a dark surface."""
@@ -223,6 +340,63 @@ TAG_STYLE = {
     'dup_child':  ('#98842a', ''),
     'clean':      ('#dcdcdc', ''),
 }
+
+# ── Kill feedback ──────────────────────────────────────────────────────────────
+# A killed row flashes hot/cold, fades into the row colour, and only then leaves
+# the tree, while the window recoils slightly. Timings are the "Default" preset
+# from tools/preview_killfx.py, which exists to re-tune these by eye.
+KILL_BLINKS     = 3        # hot/cold flashes before the fade
+KILL_BLINK_MS   = 90
+KILL_FADE_STEPS = 6        # colour steps from the flash down to the row colour
+KILL_FADE_MS    = 45
+FLASH_FG        = '#ffffff'
+FLASH_BG        = C['warn']
+# Live-scan pacing. The gap between ticks is the previous scan's own duration,
+# clamped to this range, so a fast machine refreshes briskly and a slow one
+# backs off instead of scanning continuously.
+LIVE_MIN_MS     = 1500
+LIVE_MAX_MS     = 10000
+
+# Tuned to read as a fine vibration rather than a swing: 6px peak-to-peak at
+# ~12Hz over ~240ms. Earlier attempts went wrong in both directions — a 19px
+# swing reversing at 22Hz made the window look like it was blinking, and
+# slowing that to 5Hz just turned it into the window being thrown around.
+# Small travel with quick reversal is what gives a kill punch without moving
+# the window far. If you raise the frequency, keep the swing small: it was a
+# *large* fast oscillation that flickered, not a fast one.
+# tools/preview_killfx.py imports these to compare profiles side by side.
+SHAKE_PX        = 4        # peak horizontal offset of the recoil; 0 disables it
+SHAKE_MS        = 16       # per frame — one frame at 60Hz
+SHAKE_FRAMES    = 14       # 14 x 16ms = ~240ms of recoil
+SHAKE_CYCLES    = 4.5      # oscillations over that span, i.e. ~12Hz
+SHAKE_DECAY     = 0.8      # ring-down exponent; lower rings longer
+
+
+def shake_path(amp, frames=SHAKE_FRAMES, cycles=SHAKE_CYCLES, decay=SHAKE_DECAY):
+    """Damped-sine offsets for the window recoil.
+
+    The first version alternated +amp/-amp on consecutive frames, which flips
+    sign about 28 times a second. That is fast enough to land in flicker-fusion
+    territory: a window the size of this one square-waving at 28Hz reads as
+    blinking rather than moving, which is why the shake looked like the window
+    was closing and reopening.
+
+    A damped sine fixes both halves of that. It starts at zero instead of
+    teleporting to full amplitude on frame one, and it crosses zero only
+    `cycles` times over the whole animation (~5Hz here), so the eye tracks it
+    as motion. The vertical component runs at a different frequency and a third
+    of the amplitude so the movement is not a straight line.
+    """
+    path = []
+    for i in range(frames):
+        t = i / (frames - 1)
+        ring = (1.0 - t) ** decay                 # ring down to nothing
+        path.append((
+            round(amp * ring * math.sin(2 * math.pi * cycles * t)),
+            round(amp * ring * math.sin(2 * math.pi * cycles * 1.5 * t) / 3),
+        ))
+    path.append((0, 0))                           # guarantee an exact landing
+    return path
 
 
 def fmt_mem(b):
@@ -291,13 +465,21 @@ class RamBo(tk.Tk):
         self._startup_scanning  = False
         self._startup_results   = []
         self._all_results   = []
+        self._proc_static   = {}   # pid → (name, ppid, create_time), immutable
+        self._proc_status   = {}   # pid → status, refreshed on full scans only
         self._live          = False
         self._live_after_id = None
+        self._last_scan_ms  = 0.0   # drives the adaptive live interval
         self._hover_iid     = None
         self._update_info   = None
         self._row_base      = {}   # iid → severity tag
         self._row_rec       = {}   # iid → the scan record backing that row
         self._row_band      = {}   # iid → is this row on an alternate band
+        self._row_vals      = {}   # iid → cell strings last written to the tree
+        self._row_tags      = {}   # iid → tag tuple last written to the tree
+        self._dying         = set()   # iids mid kill-animation, not yet removed
+        self._shaking       = False
+        self._filter_pending = False  # a refresh held back by a running animation
         self._logo_img      = None      # kept alive; Tk does not own PhotoImages
         self._init_style()
         self._build_ui()
@@ -309,6 +491,9 @@ class RamBo(tk.Tk):
         dark_titlebar(self)
         updater.start_check()
         self.after(1200, self._poll_update)
+        # Populate the list without waiting for a click. Deferred rather than
+        # called inline so the window paints before the scan thread starts.
+        self.after(200, self._start_scan)
 
     # ── UI ─────────────────────────────────────────────────────────────────────
     def _init_style(self):
@@ -447,21 +632,26 @@ class RamBo(tk.Tk):
 
     # ── Self-update ────────────────────────────────────────────────────────────
     def _poll_update(self):
-        """Reveal the UPDATE button once the background check finds something.
+        """Start the update as soon as the background check finds one.
 
         Polls rather than calling back from the worker thread, because Tk
         widgets may only be touched from the thread that created them."""
         self._update_info = updater.wait_for_result(0)
         if self._update_info:
-            self.update_btn.pack(side=tk.RIGHT, padx=(6, 0))
-            self._fit_topbar()
-            self.status_var.set(
-                f"Update available — v{self._update_info.version}")
+            # Updates apply themselves — no prompt. The UPDATE button only
+            # appears if that fails, as a manual fallback.
+            self._download_update(self._update_info, silent=True)
         elif not updater.is_check_done():
             self.after(1500, self._poll_update)
 
+    def _show_update_button(self):
+        """Expose the manual UPDATE button, used when the silent path fails."""
+        self.update_btn.config(state=tk.NORMAL, text="⬆  UPDATE")
+        self.update_btn.pack(side=tk.RIGHT, padx=(6, 0))
+        self._fit_topbar()
+
     def _show_update(self):
-        """Offer the update, then download and apply it if accepted."""
+        """Offer the update explicitly. Only reachable via the fallback button."""
         info = self._update_info
         if not info:
             return
@@ -483,9 +673,14 @@ class RamBo(tk.Tk):
             return
         self._download_update(info)
 
-    def _download_update(self, info):
-        """Fetch the release zip on a worker thread, reporting progress."""
-        self.update_btn.config(state=tk.DISABLED, text="⬆  DOWNLOADING")
+    def _download_update(self, info, silent=False):
+        """Fetch the release installer on a worker thread, reporting progress.
+
+        `silent` is the automatic path: it never opens a dialog, reports
+        through the status bar only, and falls back to the manual button if
+        anything goes wrong."""
+        if not silent:
+            self.update_btn.config(state=tk.DISABLED, text="⬆  DOWNLOADING")
 
         def _progress(done, total):
             pct = (done / total * 100) if total else 0
@@ -498,28 +693,40 @@ class RamBo(tk.Tk):
 
         def _finish(path):
             if path is None:
-                self.update_btn.config(state=tk.NORMAL, text="⬆  UPDATE")
+                self._show_update_button()
                 self.status_var.set("Update download failed")
-                messagebox.showwarning(
-                    "Download failed",
-                    "Could not download the update.\n\n"
-                    "Check your connection, or grab it from the releases page.",
-                    parent=self)
+                if not silent:
+                    messagebox.showwarning(
+                        "Download failed",
+                        "Could not download the update.\n\n"
+                        "Check your connection, or grab it from the releases page.",
+                        parent=self)
                 return
-            self.status_var.set("Installing update…")
-            if updater.apply(path):
-                # The helper waits for this process to exit before swapping
-                # files in, so quitting now is what lets the update land.
-                self.destroy()
-            else:
-                self.update_btn.config(state=tk.NORMAL, text="⬆  UPDATE")
-                self.status_var.set("Update install failed")
-                messagebox.showwarning(
-                    "Install failed",
-                    "The update could not be applied.",
-                    parent=self)
+            self._install_update(path, silent)
 
         threading.Thread(target=_work, daemon=True).start()
+
+    def _install_update(self, path, silent=False):
+        """Run the installer once the app is idle, then quit so it can proceed.
+
+        Waiting for idle matters on the silent path: an update can land at any
+        moment, and closing the app out from under a running scan, a trim or a
+        kill animation would look like a crash. Live ticks leave gaps, so this
+        never waits long."""
+        if self._scanning or self._trimming or self._dying:
+            self.after(500, self._install_update, path, silent)
+            return
+        self.status_var.set("Installing update…")
+        if updater.run_installer(path):
+            # The installer needs this process gone before it can replace the
+            # files; its [Run] entry relaunches RamBo when it finishes.
+            self.destroy()
+            return
+        self._show_update_button()
+        self.status_var.set("Update install failed")
+        if not silent:
+            messagebox.showwarning(
+                "Install failed", "The update could not be applied.", parent=self)
 
     def _elevate(self):
         """Restart elevated so kills and startup edits stop hitting AccessDenied."""
@@ -552,20 +759,23 @@ class RamBo(tk.Tk):
         self.f_orphans   = tk.BooleanVar(value=True)
         self.f_sys       = tk.BooleanVar(value=True)
 
-        for label, var, color in [
-            ("Duplicates",     self.f_dupes,     C['yellow']),
-            ("Not Responding", self.f_hung,      C['orange']),
-            ("Zombies",        self.f_zombies,   C['red']),
-            ("Suspended",      self.f_suspended, C['text']),
-            ("Orphans",        self.f_orphans,   C['purple']),
+        for label, var, color, tip in [
+            ("Duplicates", self.f_dupes, C['yellow'], CHIP_HELP['dupes']),
+            ("Not Responding", self.f_hung, C['orange'], CHIP_HELP['hung']),
+            ("Zombies", self.f_zombies, C['red'], CHIP_HELP['zombie']),
+            ("Suspended", self.f_suspended, C['text'], CHIP_HELP['suspended']),
+            ("Orphans", self.f_orphans, C['purple'], CHIP_HELP['orphan']),
         ]:
-            FilterChip(bar, label, var, color, self._apply_filter).pack(
-                side=tk.LEFT, padx=(0, 6))
+            chip = FilterChip(bar, label, var, color, self._apply_filter)
+            chip.pack(side=tk.LEFT, padx=(0, 6))
+            Tooltip(chip, tip)
 
         tk.Frame(bar, bg=C['border'], width=1, height=20).pack(
             side=tk.LEFT, padx=10, pady=2)
-        FilterChip(bar, "Hide System", self.f_sys, C['blue'],
-                   self._apply_filter).pack(side=tk.LEFT)
+        sys_chip = FilterChip(bar, "Hide System", self.f_sys, C['blue'],
+                              self._apply_filter)
+        sys_chip.pack(side=tk.LEFT)
+        Tooltip(sys_chip, CHIP_HELP['system'])
 
         self._build_searchbox(bar)
 
@@ -648,6 +858,17 @@ class RamBo(tk.Tk):
         # tagged in priority order: hover, then severity tint, then banding.
         self.tree.tag_configure('hover', background=C['border'])
         self.tree.tag_configure('alt',   background=C['row_alt'])
+
+        # Kill animation: two flash states, then a ramp easing them down into
+        # the row colour so the row dissolves instead of blinking out.
+        self.tree.tag_configure('flash', foreground=FLASH_FG, background=FLASH_BG)
+        self.tree.tag_configure('flash_off', foreground=C['red'], background=C['row'])
+        for i in range(KILL_FADE_STEPS):
+            t = (i + 1) / KILL_FADE_STEPS
+            self.tree.tag_configure(f'fade{i}',
+                                    foreground=lerp(FLASH_FG, C['row'], t),
+                                    background=lerp(FLASH_BG, C['row'], t))
+
         for tag, (fg, bg) in TAG_STYLE.items():
             if bg:
                 self.tree.tag_configure(tag, foreground=fg, background=bg)
@@ -682,18 +903,123 @@ class RamBo(tk.Tk):
     # ── Row painting ───────────────────────────────────────────────────────────
     def _repaint_rows(self):
         """Rebuild every process row's tag list and remember its band parity."""
-        self._row_band = {}
         for i, iid in enumerate(self.tree.get_children()):
             self._row_band[iid] = bool(i % 2)
             self._paint_row(iid)
 
     def _paint_row(self, iid):
-        """Apply hover / severity / banding tags to one row, in that order."""
+        """Apply hover / severity / banding tags to one row, in that order.
+
+        The write is skipped when the tags are unchanged: a live refresh walks
+        every visible row, and handing Tk an identical tag tuple still costs a
+        redraw of that row."""
+        if iid in self._dying:          # mid-animation; _die owns its tags
+            return
         tags = ['hover'] if iid == self._hover_iid else []
         tags.append(self._row_base.get(iid, 'clean'))
         if self._row_band.get(iid):
             tags.append('alt')
-        self.tree.item(iid, tags=tuple(tags))
+        tags = tuple(tags)
+        if self._row_tags.get(iid) == tags:
+            return
+        self._row_tags[iid] = tags
+        self.tree.item(iid, tags=tags)
+
+    def _forget_row(self, iid):
+        """Remove one process row and every cache entry keyed on it."""
+        if self.tree.exists(iid):
+            self.tree.delete(iid)
+        for cache in (self._row_base, self._row_rec, self._row_band,
+                      self._row_vals, self._row_tags):
+            cache.pop(iid, None)
+        self._dying.discard(iid)
+        if self._hover_iid == iid:
+            self._hover_iid = None
+
+    # ── Kill feedback ──────────────────────────────────────────────────────────
+    def _shake(self):
+        """Recoil the window briefly so a kill lands with some weight.
+
+        The window is moved with SetWindowPos on the real HWND rather than
+        wm_geometry. Tk's geometry() is a request-then-confirm round trip that
+        emits two <Configure> events per call, so a ten-frame shake pushed the
+        window through twenty reconfigures and visibly strobed the frame.
+
+        Skipped while maximised: moving a zoomed window fights the window
+        manager and snaps it out of the maximised state."""
+        if not SHAKE_PX or self._shaking or self.state() != 'normal':
+            return
+        try:
+            hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
+            rect = wintypes.RECT()
+            if not ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                return
+        except Exception:
+            return                      # cosmetic only; never break a kill
+        origin_x, origin_y = rect.left, rect.top
+        # NOSIZE | NOZORDER | NOACTIVATE — move only, never resize or refocus.
+        flags = 0x0001 | 0x0004 | 0x0010
+
+        def move(x, y):
+            try:
+                ctypes.windll.user32.SetWindowPos(hwnd, 0, x, y, 0, 0, flags)
+            except Exception:
+                pass
+
+        path = shake_path(SHAKE_PX)
+        self._shaking = True
+
+        def step(i=0):
+            if i >= len(path):
+                move(origin_x, origin_y)
+                self._shaking = False
+                return
+            dx, dy = path[i]
+            move(origin_x + dx, origin_y + dy)
+            self.after(SHAKE_MS, step, i + 1)
+
+        step()
+
+    def _start_kill_anim(self, iid):
+        """Mark a killed row as dying and begin its blink/fade."""
+        if iid in self._dying or not self.tree.exists(iid):
+            return
+        self._dying.add(iid)
+        # The blue selection tint would sit on top of the flash colours.
+        self.tree.selection_remove(iid)
+        self._die(iid)
+
+    def _die(self, iid, step=0):
+        """Blink the row, fade it into the background, then remove it.
+
+        Tags are written straight to the tree rather than through _paint_row,
+        whose cache describes the row's resting appearance and must survive
+        the animation untouched."""
+        if not self.tree.exists(iid):
+            self._finish_dying(iid)
+            return
+
+        if step < KILL_BLINKS * 2:
+            self.tree.item(iid, tags=('flash',) if step % 2 == 0 else ('flash_off',))
+            self.after(KILL_BLINK_MS, self._die, iid, step + 1)
+            return
+
+        fade = step - KILL_BLINKS * 2
+        if fade < KILL_FADE_STEPS:
+            self.tree.item(iid, tags=(f'fade{fade}',))
+            self.after(KILL_FADE_MS, self._die, iid, step + 1)
+            return
+
+        self._forget_row(iid)
+        self._finish_dying(iid)
+
+    def _finish_dying(self, iid):
+        """Run any refresh that was held back while this row was animating."""
+        self._dying.discard(iid)
+        if self._dying or not self._filter_pending:
+            return
+        self._filter_pending = False
+        self._apply_filter()
 
     def _on_hover(self, event):
         """Track the row under the cursor and repaint only what changed."""
@@ -1008,95 +1334,132 @@ class RamBo(tk.Tk):
         self.ram_label.config(text=f"{used_gb:.1f}/{total_gb:.1f} GB {pct:.0f}%")
 
     # ── Scan ───────────────────────────────────────────────────────────────────
-    def _start_scan(self):
+    def _start_scan(self, quiet=False):
+        """Kick off a scan on a worker thread.
+
+        Nothing is torn down up front — the tree is reconciled against the new
+        results when they land — so neither a manual scan nor a live tick
+        blanks the list. `quiet` is the live path, which additionally leaves
+        the toolbar and status text alone so they do not strobe every 5s.
+        """
         if self._scanning:
             return
-        self._scanning    = True
-        self._all_results = []
-        self.tree.delete(*self.tree.get_children())
-        self.scan_btn.config(state=tk.DISABLED, text="SCANNING...")
-        self.kill_btn.config(state=tk.DISABLED)
-        self.kill_children_btn.config(state=tk.DISABLED)
-        self.trim_all_btn.config(state=tk.DISABLED)
-        self.status_var.set("Scanning processes...")
-        self.summary_var.set("")
-        threading.Thread(target=self._do_scan, daemon=True).start()
+        self._scanning = True
+        if not quiet:
+            self.scan_btn.config(state=tk.DISABLED, text="SCANNING...")
+            self.trim_all_btn.config(state=tk.DISABLED)
+            self.status_var.set("Scanning processes...")
+            if not self._all_results:
+                self.empty_lbl.config(text=self._empty_text())
+        threading.Thread(target=self._do_scan, args=(quiet,), daemon=True).start()
 
-    def _do_scan(self):
+    def _do_scan(self, quiet=False):
+        started = time.perf_counter()
         try:
-            results = self._find_issues()
-            self._all_results = results
+            # A live tick skips the expensive status() re-read; see _collect.
+            self._all_results = self._find_issues(full=not quiet)
             self.after(0, self._apply_filter)
         except Exception as e:
             self.after(0, lambda: self.status_var.set(f"Error: {e}"))
         finally:
-            self.after(0, self._scan_done)
+            self._last_scan_ms = (time.perf_counter() - started) * 1000
+            self.after(0, self._scan_done, quiet)
 
-    def _find_issues(self):
+    def _collect(self, full):
+        """One snapshot of every process, as (pid, name, ppid, born, rss, status).
+
+        psutil is startlingly expensive on Windows, and measurably so here:
+        over ~390 processes, ppid costs 4.5s, status 3.5s, memory 1.8s and
+        name+create_time 1.6s. The old scan paid all of that AND then re-read
+        the same values through proc.status()/.memory_info() instead of the
+        already-fetched proc.info, for about 15 seconds a scan. Live mode ticks
+        every 5s, so it was simply always scanning — that is the lag.
+
+        Three things make it cheap:
+          * ppid comes from one ppid_map() call rather than one system snapshot
+            per process, which is where the 4.5s went (4460ms -> 11ms).
+          * name, ppid and create_time cannot change while a pid lives, so they
+            are read once and cached.
+          * `full` is False on a live tick, which skips status() — the single
+            most expensive call. New pids are always read in full, so a process
+            that shows up already suspended is still classified correctly; only
+            a state change on a pid we have already seen waits for a full scan.
+        """
+        parents = _ppid_map()
+        static, status_cache = self._proc_static, self._proc_status
+        rows, seen = [], set()
+
+        for proc in psutil.process_iter(['pid']):
+            pid = proc.pid
+            try:
+                # oneshot() lets psutil reuse one query across these calls.
+                with proc.oneshot():
+                    fixed = static.get(pid)
+                    if fixed is None:
+                        fixed = (proc.name(), parents.get(pid, 0), proc.create_time())
+                        static[pid] = fixed
+                    rss = proc.memory_info().rss
+                    if full or pid not in status_cache:
+                        status_cache[pid] = proc.status()
+            except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+                continue
+            seen.add(pid)
+            rows.append((pid, fixed[0], fixed[1], fixed[2], rss, status_cache[pid]))
+
+        # Drop cache entries for processes that have exited, so a long live
+        # session cannot grow the dictionaries without bound.
+        for pid in list(static):
+            if pid not in seen:
+                static.pop(pid, None)
+                status_cache.pop(pid, None)
+        return rows, seen
+
+    def _find_issues(self, full=True):
         issues      = []
         name_groups = defaultdict(list)
         hung_pids   = get_hung_pids()
         _now        = time.time()
-        _live_pids  = {p.pid for p in psutil.process_iter(['pid'])}
+        rows, _live_pids = self._collect(full)
 
-        for proc in psutil.process_iter(['pid', 'name', 'status', 'memory_info', 'ppid', 'create_time']):
-            try:
-                name_groups[proc.info['name'].lower()].append(proc)
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                pass
+        for row in rows:
+            name_groups[row[1].lower()].append(row)
 
         for name_key, procs in name_groups.items():
             is_system = name_key in SYSTEM_NAMES
             count     = len(procs)
+            group_pids = {r[0] for r in procs}
 
-            group_pids = set()
-            for p in procs:
-                try:
-                    group_pids.add(p.pid)
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    pass
+            for pid, name, ppid, born, mem, status in procs:
+                if status == psutil.STATUS_ZOMBIE:
+                    issues.append(self._make(
+                        name, pid, mem, 'Zombie', 'zombie', '—', count, is_system))
 
-            for proc in procs:
-                try:
-                    pid    = proc.pid
-                    status = proc.status()
-                    mem    = proc.memory_info().rss
-                    name   = proc.name()
-                    ppid   = proc.ppid()
+                elif pid in hung_pids:
+                    issues.append(self._make(
+                        name, pid, mem, 'Not Responding', 'hung', '—', count, is_system))
 
-                    if status == psutil.STATUS_ZOMBIE:
-                        issues.append(self._make(
-                            name, pid, mem, 'Zombie', 'zombie', '—', count, is_system))
+                elif status == psutil.STATUS_STOPPED:
+                    issues.append(self._make(
+                        name, pid, mem, 'Suspended', 'suspended', '—', count, is_system))
 
-                    elif pid in hung_pids:
-                        issues.append(self._make(
-                            name, pid, mem, 'Not Responding', 'hung', '—', count, is_system))
-
-                    elif status == psutil.STATUS_STOPPED:
-                        issues.append(self._make(
-                            name, pid, mem, 'Suspended', 'suspended', '—', count, is_system))
-
-                    elif count > 1:
-                        if ppid not in group_pids:
-                            issue, tag, role = 'Dupe · Main', 'dup_main', 'Main'
-                        else:
-                            issue, tag, role = 'Dupe · Child', 'dup_child', 'Child'
-
-                        issues.append(self._make(
-                            name, pid, mem, issue, tag, role, count, is_system))
-
-                    elif (not is_system and ppid > 4
-                          and ppid not in _live_pids
-                          and (_now - proc.info.get('create_time', _now)) >= 12 * 3600):
-                        issues.append(self._make(
-                            name, pid, mem, 'Orphan', 'orphan', '—', 1, is_system))
-
+                elif count > 1:
+                    if ppid not in group_pids:
+                        issue, tag, role = 'Dupe · Main', 'dup_main', 'Main'
                     else:
-                        issues.append(self._make(
-                            name, pid, mem, '—', 'clean', '—', 1, is_system))
+                        issue, tag, role = 'Dupe · Child', 'dup_child', 'Child'
 
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    pass
+                    issues.append(self._make(
+                        name, pid, mem, issue, tag, role, count, is_system))
+
+                elif (not is_system and ppid > 4
+                      and ppid not in _live_pids
+                      and (_now - born) >= 12 * 3600):
+                    issues.append(self._make(
+                        name, pid, mem, 'Orphan', 'orphan', '—', 1, is_system))
+
+                else:
+                    issues.append(self._make(
+                        name, pid, mem, '—', 'clean', '—', 1, is_system))
 
         return sorted(issues, key=lambda x: (
             ISSUE_ORDER.get(x['issue'], 99), x['name'].lower()))
@@ -1109,15 +1472,21 @@ class RamBo(tk.Tk):
             'count': count, 'is_system': is_system,
         }
 
-    def _scan_done(self):
+    def _scan_done(self, quiet=False):
         self._scanning = False
-        self.scan_btn.config(state=tk.NORMAL, text="▶  SCAN")
+        if not quiet:
+            self.scan_btn.config(state=tk.NORMAL, text="▶  SCAN")
         self.trim_all_btn.config(state=tk.NORMAL)
         has_issues = any(r['issue'] != '—' for r in self._all_results)
         if self._all_results and not has_issues:
             self.status_var.set("No issues found — system looks clean ✓")
         if self._live:
-            self.status_var.set("● Live · next refresh in 5s")
+            # The interval adapts to how long the scan takes, so report it
+            # rather than a fixed figure that would often be wrong.
+            gap = max(LIVE_MIN_MS, min(int(self._last_scan_ms), LIVE_MAX_MS))
+            self.status_var.set(
+                f"● Live · scan {self._last_scan_ms / 1000:.1f}s"
+                f" · next in {gap / 1000:.1f}s")
         self._update_ram()
 
     # ── Live scan ──────────────────────────────────────────────────────────────
@@ -1136,21 +1505,111 @@ class RamBo(tk.Tk):
             self.status_var.set("Live scan stopped")
 
     def _schedule_live(self):
+        """Run one live tick, then schedule the next one after it finishes.
+
+        The old version fired every 5s from the *start* of the previous tick.
+        A scan that took longer than the interval therefore ran back to back
+        forever, pinning a core and leaving the UI permanently choppy. Timing
+        from completion, and never resting for less time than the scan itself
+        took, keeps the duty cycle at or under 50% on any machine."""
+        self._live_after_id = None
         if not self._live:
             return
-        self._start_scan()
-        self._live_after_id = self.after(5000, self._schedule_live)
+        # Quiet: a live tick refreshes the rows in place and must not touch the
+        # SCAN button or the status line.
+        self._start_scan(quiet=True)
+        self._await_live_tick()
+
+    def _await_live_tick(self):
+        """Wait for the running scan, then queue the next tick."""
+        if not self._live:
+            return
+        if self._scanning:
+            self.after(100, self._await_live_tick)
+            return
+        delay = max(LIVE_MIN_MS, min(int(self._last_scan_ms), LIVE_MAX_MS))
+        self._live_after_id = self.after(delay, self._schedule_live)
 
     # ── Filter & sort ──────────────────────────────────────────────────────────
+    @staticmethod
+    def _row_values(r):
+        """The six formatted cell strings for one scan record."""
+        count = str(r['count']) if 'Dupe' in r['issue'] else '—'
+        return (r['name'], str(r['pid']), fmt_mem(r['memory']),
+                r['issue'], r['role'], count)
+
+    def _sort_key(self, r):
+        """Sort key for one record, on the stored value not the shown text."""
+        col = self._sort_col
+        if col == 'process':
+            return r['name'].lower()
+        if col == 'pid':
+            return r['pid']
+        if col == 'memory':
+            return r['memory']
+        if col == 'issue':
+            return ISSUE_ORDER.get(r['issue'], 99)
+        if col == 'role':
+            return r['role']
+        # instances: only duplicates carry a count, the rest sort as 0
+        return r['count'] if 'Dupe' in r['issue'] else 0
+
+    def _empty_text(self):
+        """What the empty-list overlay should say for the current state."""
+        if self._scanning:
+            return "Scanning processes..."
+        if self._all_results:
+            return "No processes match the current filters"
+        return "Press SCAN to begin"
+
+    def _sync_tree(self, rows):
+        """Reconcile the tree against `rows` in place instead of rebuilding it.
+
+        Live mode re-runs the scan every few seconds. Clearing the tree and
+        re-inserting every row made that visible: the list blanked, the scroll
+        position jumped back to the top, the selection had to be restored by
+        hand and the active sort was lost. Reconciling instead means a refresh
+        only removes processes that exited, adds ones that appeared, and
+        rewrites the cells whose text actually changed — so from the user's
+        side nothing moves except the numbers.
+        """
+        wanted = {str(r['pid']): r for r in rows}
+
+        # Processes that exited, or that the current filters now exclude.
+        for iid in list(self.tree.get_children()):
+            if iid not in wanted and iid not in self._dying:
+                self._forget_row(iid)
+
+        for index, r in enumerate(rows):
+            iid    = str(r['pid'])
+            values = self._row_values(r)
+            if self.tree.exists(iid):
+                # Compared against what was last written rather than against
+                # the tree itself: values read back out of Tk have been through
+                # Tcl, which re-types the numeric cells and never compares equal.
+                if self._row_vals.get(iid) != values:
+                    self.tree.item(iid, values=values)
+                # Everything before `index` is already in place, so a row that
+                # is not at `index` only has to move once.
+                if self.tree.index(iid) != index:
+                    self.tree.move(iid, '', index)
+            else:
+                self.tree.insert('', index, iid=iid, values=values)
+            self._row_vals[iid] = values
+            self._row_base[iid] = r['tag']
+            self._row_rec[iid]  = r
+
+        self._repaint_rows()
+
     def _apply_filter(self):
-        prev_sel = set(self.tree.selection())
-        self.tree.delete(*self.tree.get_children())
+        if self._dying:
+            # Under a second, and _finish_dying replays it once the last row
+            # clears, so the list is never left stale.
+            self._filter_pending = True
+            return
         hide_sys = self.f_sys.get()
         query    = self.search_var.get().strip().lower()
-        shown    = 0
-        self._row_base = {}
-        self._row_rec = {}
-        self._hover_iid = None
+        rows     = []
 
         for r in self._all_results:
             if hide_sys and r['is_system']:
@@ -1168,68 +1627,44 @@ class RamBo(tk.Tk):
             if r['issue'] == 'Orphan'         and not self.f_orphans.get():
                 continue
 
-            count_str = str(r['count']) if 'Dupe' in r['issue'] else '—'
-            iid = str(r['pid'])
-            self.tree.insert('', tk.END, iid=iid,
-                             values=(r['name'], r['pid'], fmt_mem(r['memory']),
-                                     r['issue'], r['role'], count_str))
-            self._row_base[iid] = r['tag']
-            self._row_rec[iid] = r
-            shown += 1
+            rows.append(r)
 
-        self._repaint_rows()
+        # Ordered here rather than by re-sorting the tree afterwards, so a live
+        # refresh lands rows in the order the user chose instead of snapping
+        # back to scan order every few seconds.
+        if self._sort_col:
+            rows.sort(key=self._sort_key, reverse=self._sort_rev)
+
+        self._sync_tree(rows)
+        shown = len(rows)
 
         # Empty state is an overlay rather than a tree row, so it can never be
         # selected and fed to the kill/trim paths.
         if shown:
             self.empty_lbl.place_forget()
         else:
-            self.empty_lbl.config(
-                text="No processes match the current filters"
-                if self._all_results else "Press SCAN to begin")
+            self.empty_lbl.config(text=self._empty_text())
             self.empty_lbl.lift()
             self.empty_lbl.place(relx=0.5, rely=0.45, anchor=tk.CENTER)
 
-        # Restore selection surviving the refresh
-        to_restore = [iid for iid in prev_sel if self.tree.exists(iid)]
-        if to_restore:
-            self.tree.selection_set(to_restore)
-
+        # Selection is no longer restored by hand: surviving rows are never
+        # deleted, so Tk keeps them selected on its own.
         total = len(self._all_results)
         if total:
-            self.status_var.set("Scan complete")
+            if not self._live:
+                self.status_var.set("Scan complete")
             self.summary_var.set(f"{shown} shown  /  {total} found")
-        self.kill_btn.config(state=tk.DISABLED)
-        self.kill_children_btn.config(state=tk.DISABLED)
         self._on_select()
 
     def _sort(self, col):
-        """Sort on the underlying record values, never on the formatted text."""
+        """Sort on the underlying record values, never on the formatted text.
+
+        The ordering itself lives in _apply_filter, so that every later live
+        refresh reapplies it instead of the tree drifting back to scan order."""
         rev = (self._sort_col == col) and not self._sort_rev
-
-        def key(iid):
-            r = self._row_rec.get(iid)
-            if r is None:                    # row with no backing record
-                return (1, '')
-            if col == 'process':
-                return (0, r['name'].lower())
-            if col == 'pid':
-                return (0, r['pid'])
-            if col == 'memory':
-                return (0, r['memory'])
-            if col == 'issue':
-                return (0, ISSUE_ORDER.get(r['issue'], 99))
-            if col == 'role':
-                return (0, r['role'])
-            # instances: only duplicates carry a count, the rest sort as 0
-            return (0, r['count'] if 'Dupe' in r['issue'] else 0)
-
-        for i, iid in enumerate(sorted(self.tree.get_children(), key=key,
-                                       reverse=rev)):
-            self.tree.move(iid, '', i)
-        self._repaint_rows()
         self._sort_col = col
         self._sort_rev = rev
+        self._apply_filter()
 
         _labels = {
             "process": "PROCESS NAME", "pid": "PID", "memory": "MEMORY",
@@ -1386,15 +1821,26 @@ class RamBo(tk.Tk):
         for iid in sel:
             try:
                 psutil.Process(int(iid)).kill()
-                self.tree.delete(iid)
+                # The row is not removed here: it blinks and fades first, and
+                # _die drops it when the animation ends.
+                self._start_kill_anim(iid)
                 killed += 1
             except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
                 failed.append(f"PID {iid}: {e}")
 
+        # Audible outcome. A deflection takes priority over the gunshot: on a
+        # partial kill the refusal is the part worth hearing, and winsound
+        # plays one clip at a time anyway.
+        if failed:
+            sounds.play_blocked()
+        elif killed:
+            sounds.play_kill()
+            self._shake()
+
         killed_pids       = {int(iid) for iid in sel}
         self._all_results = [r for r in self._all_results if r['pid'] not in killed_pids]
 
-        shown = len(self.tree.get_children())
+        shown = len([i for i in self.tree.get_children() if i not in self._dying])
         total = len(self._all_results)
         self.status_var.set(f"Terminated {killed} process(es)")
         self.summary_var.set(f"{shown} shown  /  {total} found" if total else "")
@@ -1446,15 +1892,26 @@ class RamBo(tk.Tk):
         for iid in child_iids:
             try:
                 psutil.Process(int(iid)).kill()
-                self.tree.delete(iid)
+                # The row is not removed here: it blinks and fades first, and
+                # _die drops it when the animation ends.
+                self._start_kill_anim(iid)
                 killed += 1
             except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
                 failed.append(f"PID {iid}: {e}")
 
+        # Audible outcome. A deflection takes priority over the gunshot: on a
+        # partial kill the refusal is the part worth hearing, and winsound
+        # plays one clip at a time anyway.
+        if failed:
+            sounds.play_blocked()
+        elif killed:
+            sounds.play_kill()
+            self._shake()
+
         killed_pids       = {int(iid) for iid in child_iids}
         self._all_results = [r for r in self._all_results if r['pid'] not in killed_pids]
 
-        shown = len(self.tree.get_children())
+        shown = len([i for i in self.tree.get_children() if i not in self._dying])
         total = len(self._all_results)
         self.status_var.set(f"Terminated {killed} child process(es)")
         self.summary_var.set(f"{shown} shown  /  {total} found" if total else "")

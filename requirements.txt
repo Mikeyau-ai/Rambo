@@ -3,5 +3,7 @@ psutil>=5.9.0
 # Build (6.22+ required: earlier versions cannot bundle Tcl 9 on Python 3.13+)
 pyinstaller>=6.22.0
 
-# Releases are published with the GitHub CLI (winget install GitHub.cli),
-# and updater.py is stdlib-only by design, so there is nothing else to install.
+# The installer is compiled with Inno Setup 6 (winget install JRSoftware.InnoSetup)
+# and releases are published with the GitHub CLI (winget install GitHub.cli).
+# Neither is a Python package, and updater.py is stdlib-only by design, so
+# there is nothing else to pip install.

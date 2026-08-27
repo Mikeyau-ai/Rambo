@@ -1,28 +1,33 @@
 """
 updater.py — self-update for installed (frozen) RamBo builds.
 
-Checks GitHub Releases for a newer RamBo.zip, downloads it, and swaps it over
-the install directory via a detached helper script, because a running exe
-cannot overwrite itself.
+Checks GitHub Releases for a newer RamBo-Setup.exe, downloads it, then runs it
+silently and exits. The freshly-installed build relaunches RamBo itself, via
+the installer.iss [Run] entry — the `skipifsilent` flag is deliberately absent
+there so a /SILENT install still launches the app at the end.
+
+This replaced an older scheme that unzipped a release over the install
+directory with robocopy. That was right while RamBo shipped as a portable zip,
+but it is wrong for an installed build: it leaves the version in Apps &
+Features stale and writes files the uninstaller has no record of. Letting Inno
+Setup perform the upgrade keeps the install self-consistent.
 
 Only ever active in a frozen build — running from source, `is_enabled()` is
 False, so dev sessions never see an update prompt. A source tree's version can
 legitimately be ahead of the published release, and copying over it would
 clobber the working copy.
 
-Stdlib only (urllib/json/threading/zipfile), deliberately: this module ships
+Stdlib only (urllib/json/threading), deliberately: this module ships
 inside the PyInstaller bundle and must not add anything to requirements.txt.
 """
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import threading
 import urllib.error
 import urllib.request
-import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -32,7 +37,7 @@ from pathlib import Path
 GITHUB_REPO = os.getenv('RAMBO_UPDATE_REPO', 'Mikeyau-ai/Rambo')
 
 _API_LATEST = f'https://api.github.com/repos/{GITHUB_REPO}/releases/latest'
-_ASSET_NAME = 'RamBo.zip'
+_ASSET_NAME = 'RamBo-Setup.exe'
 _USER_AGENT = 'RamBo-Updater'
 _CHECK_TIMEOUT = 8      # seconds — backgrounded, but don't hang forever
 
@@ -207,17 +212,17 @@ def skip_version(version):
 
 # ── Download + apply ───────────────────────────────────────────────────────────
 def download(info, progress_cb=None, cancel=None):
-    """Download the release zip, returning its path or None on failure.
+    """Download the release installer, returning its path or None on failure.
 
     `progress_cb(done_bytes, total_bytes)` is called as chunks arrive and
     `cancel()` is polled per chunk, so the UI can show progress and bail out.
-    Leaves no partial zip behind."""
+    Leaves no partial download behind."""
     _UPDATE_DIR.mkdir(parents=True, exist_ok=True)
-    dest = _UPDATE_DIR / f'RamBo-{info.version}.zip'
-    part = dest.with_suffix('.zip.part')
+    dest = _UPDATE_DIR / f'RamBo-Setup-{info.version}.exe'
+    part = dest.with_suffix('.exe.part')
 
     # Don't accumulate a copy of every update ever downloaded.
-    for old in _UPDATE_DIR.glob('RamBo-*.zip'):
+    for old in _UPDATE_DIR.glob('RamBo-Setup-*.exe'):
         if old != dest:
             try:
                 old.unlink()
@@ -255,84 +260,19 @@ def download(info, progress_cb=None, cancel=None):
     return dest
 
 
-def _stage(zip_path):
-    """Extract the zip and return the folder holding the new RamBo.exe."""
-    staging = _UPDATE_DIR / 'staging'
-    shutil.rmtree(staging, ignore_errors=True)
-    staging.mkdir(parents=True, exist_ok=True)
+def run_installer(path):
+    """Launch the downloaded installer silently and detached, then report success.
+
+    The caller must quit immediately afterwards: /CLOSEAPPLICATIONS lets Inno
+    shut the running app down so it can replace its files, and the new build's
+    [Run] entry relaunches RamBo once the install finishes."""
     try:
-        with zipfile.ZipFile(zip_path) as zf:
-            zf.extractall(staging)
-    except (zipfile.BadZipFile, OSError):
-        return None
-    # The archive is built with a top-level RamBo/ folder, but tolerate a flat
-    # one in case the release was packaged by hand.
-    inner = staging / 'RamBo'
-    root = inner if (inner / 'RamBo.exe').exists() else staging
-    return root if (root / 'RamBo.exe').exists() else None
-
-
-# The swap has to outlive us: a running exe can't overwrite itself, so a detached
-# cmd waits for this process to exit, copies the new files in, and relaunches.
-# Every tool is called by absolute path. A user with Git-for-Windows or similar
-# on PATH can otherwise shadow `find` with the Unix one, which silently breaks
-# the wait loop and copies over the app while it is still running.
-_APPLY_SCRIPT = """@echo off
-setlocal
-set "TASKLIST=%SystemRoot%\\System32\\tasklist.exe"
-set "FIND=%SystemRoot%\\System32\\find.exe"
-set "PING=%SystemRoot%\\System32\\ping.exe"
-set "ROBOCOPY=%SystemRoot%\\System32\\robocopy.exe"
-
-rem Wait for RamBo to exit so its files can be replaced. Bounded, so a stuck
-rem process leaves the install untouched rather than hanging forever.
-set /a tries=0
-:wait
-"%TASKLIST%" /fi "PID eq {pid}" /nh 2>nul | "%FIND%" "{pid}" >nul
-if errorlevel 1 goto ready
-set /a tries+=1
-if %tries% GEQ 60 (
-  echo RamBo did not exit; update cancelled.
-  pause
-  exit /b 1
-)
-"%PING%" -n 2 127.0.0.1 >nul
-goto wait
-
-:ready
-"%ROBOCOPY%" "{src}" "{dst}" /E /R:2 /W:1 /NFL /NDL /NJH /NJS /NP >nul
-if errorlevel 8 (
-  echo RamBo update failed to copy files.
-  pause
-  exit /b 1
-)
-start "" "{exe}"
-rmdir /s /q "{staging}"
-"""
-
-
-def apply(zip_path):
-    """Stage the update and launch the detached swap script.
-
-    Returns True once the helper is running, at which point the caller must
-    exit immediately so its files can be replaced."""
-    src = _stage(zip_path)
-    if src is None:
-        return False
-
-    dst = install_dir()
-    script = _UPDATE_DIR / 'apply_update.cmd'
-    try:
-        script.write_text(_APPLY_SCRIPT.format(
-            pid=os.getpid(), src=src, dst=dst,
-            exe=dst / 'RamBo.exe', staging=_UPDATE_DIR / 'staging'),
-            encoding='utf-8')
         subprocess.Popen(
-            ['cmd', '/c', str(script)],
+            [str(path), '/SILENT', '/SUPPRESSMSGBOXES', '/NOCANCEL',
+             '/NORESTART', '/CLOSEAPPLICATIONS'],
             close_fds=True,
             creationflags=getattr(subprocess, 'DETACHED_PROCESS', 0)
-                          | getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0)
-                          | getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+                          | getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0))
         return True
     except OSError:
         return False

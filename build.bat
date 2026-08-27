@@ -19,6 +19,7 @@ python -m PyInstaller ^
   --icon icon.ico ^
   --add-data "icon.ico;." ^
   --add-data "logo.png;." ^
+  --add-data "assets\sfx;assets\sfx" ^
   --collect-all psutil ^
   --hidden-import psutil._pswindows ^
   --hidden-import psutil._psutil_windows ^
@@ -33,6 +34,19 @@ if errorlevel 1 (
 
 echo.
 echo  Built dist\RamBo\RamBo.exe
+
+:: Wrap the one-dir bundle in a real installer. This is what people download:
+:: a zip lets Explorer launch RamBo.exe from inside the archive, where
+:: _internal\ was never extracted and loading python3xx.dll fails.
+echo.
+echo  Building installer...
+python build_installer.py
+if errorlevel 1 (
+  echo.
+  echo  INSTALLER BUILD FAILED - skipping release.
+  pause
+  exit /b 1
+)
 
 :: Pass --no-upload to build without cutting a release.
 if /i "%~1"=="--no-upload" (

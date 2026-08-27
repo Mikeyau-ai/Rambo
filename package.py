@@ -1,7 +1,7 @@
 """
 Shared packaging helpers for the release scripts.
 
-Both publish_github.py and upload_drive.py need the same zip and the same
+The release scripts and build_installer.py need the same paths and the same
 version string, so they live here rather than being duplicated in each.
 """
 import os
@@ -12,6 +12,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 DIST_DIR = os.path.join(HERE, 'dist', 'RamBo')
 ZIP_PATH = os.path.join(HERE, 'dist', 'RamBo.zip')
+SETUP_PATH = os.path.join(HERE, 'dist', 'RamBo-Setup.exe')
 
 
 def get_version():

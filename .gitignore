@@ -11,6 +11,7 @@ __pycache__/
 *.py[cod]
 
 # Secrets — never commit these
+.env
 credentials.json
 token.json
 .drive_release.json
