@@ -8,6 +8,15 @@ docs in `docs/superpowers/`. They were never cut as numbered builds — the alph
 ran straight from source — so the numbers are a reading of that history rather
 than tags that once existed.
 
+## 1.4.1
+- Filter tooltips appear under the chip you are hovering, instead of in the
+  top-left corner of the screen. On Windows a borderless window ignores a move
+  once it has been shown, so the tooltip is now positioned before it is ever
+  displayed. It also flips above the chip rather than running off the bottom.
+- The About window no longer shows this file's maintainer preamble, and renders
+  bold, italic and `code` as formatting rather than printing the raw markdown
+  markers. Bullets are rewrapped to the window width.
+
 ## 1.4.0
 - Updates **ask before installing** again. 1.2.0 applied them without a word,
   which meant an update could land mid-session with no explanation. RamBo now

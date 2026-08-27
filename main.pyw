@@ -9,6 +9,7 @@ import os
 import subprocess
 import ctypes
 import math
+import re
 import webbrowser
 from ctypes import wintypes
 
@@ -45,7 +46,7 @@ import updater
 import sounds
 
 # Single source of truth for the version; the release scripts parse this.
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.4.1"
 
 # ── Palette ────────────────────────────────────────────────────────────────────
 C = {
@@ -258,6 +259,11 @@ class Tooltip:
         if self._tip is not None or not self.widget.winfo_viewable():
             return
         tip = self._tip = tk.Toplevel(self.widget)
+        # Built while withdrawn. On Windows an overrideredirect window that has
+        # already been mapped ignores later wm_geometry calls, which left every
+        # tooltip stuck at the top-left corner of the screen; positioning it
+        # before it is ever shown is what makes the move stick.
+        tip.wm_withdraw()
         tip.wm_overrideredirect(True)          # no frame, no title bar
         tip.configure(bg=C['border'])          # 1px border via the packing pad
         tk.Label(tip, text=self.text, justify=tk.LEFT, font=FONT_UI,
@@ -265,17 +271,20 @@ class Tooltip:
                  wraplength=330).pack(padx=1, pady=1)
         tip.update_idletasks()
 
+        width, height = tip.winfo_width(), tip.winfo_height()
         x = self.widget.winfo_rootx()
         y = self.widget.winfo_rooty() + self.widget.winfo_height() + 6
-        # Nudge back on-screen when the chip sits near the right edge.
-        overshoot = (x + tip.winfo_width()) - (self.widget.winfo_screenwidth() - 8)
-        if overshoot > 0:
-            x -= overshoot
-        tip.wm_geometry(f"+{max(8, x)}+{y}")
+        # Nudge back on-screen when the chip sits near an edge, and flip above
+        # the widget rather than run off the bottom.
+        x = max(8, min(x, self.widget.winfo_screenwidth() - width - 8))
+        if y + height > self.widget.winfo_screenheight() - 8:
+            y = self.widget.winfo_rooty() - height - 6
+        tip.wm_geometry(f"+{x}+{y}")
         try:
             tip.attributes('-topmost', True)
         except tk.TclError:
             pass
+        tip.wm_deiconify()
 
     def _hide(self, _=None):
         self._cancel()
@@ -366,15 +375,66 @@ class AboutWindow(tk.Toplevel):
 
         box.tag_configure("ver", foreground=C['green'],
                           font=("Consolas", 11, "bold"), spacing1=10, spacing3=4)
-        box.tag_configure("body", spacing3=3, lmargin1=0, lmargin2=12)
+        box.tag_configure("body", spacing3=3, lmargin1=12, lmargin2=26)
+        box.tag_configure("b", font=(FONT_UI[0], FONT_UI[1], "bold"))
+        box.tag_configure("i", font=(FONT_UI[0], FONT_UI[1], "italic"))
+        box.tag_configure("code", font=FONT_DATA, foreground=C['blue'])
+
+        # Everything above the first "## " heading is the file's own preamble —
+        # a note to whoever maintains it about bumping APP_VERSION and how the
+        # pre-1.0 numbers were reconstructed. True, but it is about the repo,
+        # not about the app someone is running, so start at the first version.
+        # Each bullet is rejoined from the hard-wrapped source into one logical
+        # line before rendering. That lets the Text widget do its own wrapping
+        # at the current window width, and it is also what makes emphasis
+        # spanning a line break — "**Check for\nupdates**" — render as bold
+        # rather than leaking its asterisks.
+        started, block = False, []
+
+        def flush():
+            if block:
+                self._insert_line(box, " ".join(block))
+                block.clear()
+
         for raw in load_changelog().splitlines():
-            if raw.startswith("# "):                 # the file's own H1
-                continue
             if raw.startswith("## "):
+                flush()
+                started = True
                 box.insert(tk.END, raw[3:] + "\n", "ver")
-            else:
-                box.insert(tk.END, raw + "\n", "body")
+                continue
+            if not started:
+                continue
+            if not raw.strip():
+                flush()
+                continue
+            if raw.startswith("- "):
+                flush()
+            block.append(raw.strip())
+        flush()
         box.configure(state=tk.DISABLED)
+
+    # Inline markdown, so the source markers do not show through as literal
+    # asterisks and backticks. Bold is matched before italic, or "**x**" would
+    # be read as an empty italic followed by stray asterisks.
+    _MARKUP = re.compile(r"(\*\*.+?\*\*|\*[^*]+\*|`[^`]+`)")
+
+    def _insert_line(self, box, raw):
+        """Write one changelog paragraph, rendering its inline markdown."""
+        line = raw
+        if line.startswith("- "):
+            line = "•  " + line[2:]          # a real bullet
+        for part in self._MARKUP.split(line):
+            if not part:
+                continue
+            if part.startswith("**") and part.endswith("**"):
+                box.insert(tk.END, part[2:-2], ("body", "b"))
+            elif part.startswith("*") and part.endswith("*"):
+                box.insert(tk.END, part[1:-1], ("body", "i"))
+            elif part.startswith("`") and part.endswith("`"):
+                box.insert(tk.END, part[1:-1], ("body", "code"))
+            else:
+                box.insert(tk.END, part, "body")
+        box.insert(tk.END, "\n", "body")
 
     def _open_repo(self):
         webbrowser.open(f"https://github.com/{updater.GITHUB_REPO}")
