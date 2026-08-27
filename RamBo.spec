@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('icon.ico', '.'), ('logo.png', '.'), ('assets/sfx', 'assets/sfx')]
+datas = [('icon.ico', '.'), ('logo.png', '.'), ('CHANGELOG.md', '.'), ('assets/sfx', 'assets/sfx')]
 binaries = []
 hiddenimports = ['psutil._pswindows', 'psutil._psutil_windows']
 tmp_ret = collect_all('psutil')

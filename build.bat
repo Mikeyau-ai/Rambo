@@ -19,6 +19,7 @@ python -m PyInstaller ^
   --icon icon.ico ^
   --add-data "icon.ico;." ^
   --add-data "logo.png;." ^
+  --add-data "CHANGELOG.md;." ^
   --add-data "assets\sfx;assets\sfx" ^
   --collect-all psutil ^
   --hidden-import psutil._pswindows ^

@@ -9,6 +9,7 @@ import os
 import subprocess
 import ctypes
 import math
+import webbrowser
 from ctypes import wintypes
 
 # Resolve resource path — works both from source and frozen (PyInstaller)
@@ -44,7 +45,7 @@ import updater
 import sounds
 
 # Single source of truth for the version; the release scripts parse this.
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 
 # ── Palette ────────────────────────────────────────────────────────────────────
 C = {
@@ -281,6 +282,124 @@ class Tooltip:
         if self._tip is not None:
             self._tip.destroy()
             self._tip = None
+
+
+def load_changelog():
+    """CHANGELOG.md from the PyInstaller bundle or the source tree."""
+    try:
+        with open(_res("CHANGELOG.md"), encoding="utf-8") as fh:
+            return fh.read()
+    except OSError:
+        return "Changelog not available in this build."
+
+
+class AboutWindow(tk.Toplevel):
+    """About / changelog window, opened from the wordmark in the topbar.
+
+    The changelog is bundled into the build rather than fetched, so it reads
+    the same offline as online, and always describes the version in front of
+    you instead of whatever is newest on GitHub.
+    """
+
+    def __init__(self, app):
+        super().__init__(app)
+        self._app = app
+        self.title("About RamBo")
+        self.geometry("620x640")
+        self.minsize(460, 420)
+        self.configure(bg=C['bg'])
+        self.transient(app)
+        try:
+            self.iconbitmap(_res("icon.ico"))
+        except Exception:
+            pass
+        dark_titlebar(self)
+
+        self._build_header()
+        self._build_actions()
+        self._build_changelog()
+
+        self.bind("<Escape>", lambda _: self.destroy())
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+
+    def _build_header(self):
+        head = tk.Frame(self, bg=C['panel'], padx=18, pady=14)
+        head.pack(fill=tk.X)
+        line = tk.Frame(head, bg=C['panel'])
+        line.pack(anchor=tk.W)
+        tk.Label(line, text="RAMBO", font=("Consolas", 21, "bold"),
+                 bg=C['panel'], fg=C['green']).pack(side=tk.LEFT, anchor=tk.S)
+        # Say plainly when this is a dev run: the updater is inert from source,
+        # so "no updates" there means something different.
+        suffix = "" if getattr(sys, 'frozen', False) else "   (running from source)"
+        tk.Label(line, text="  v" + APP_VERSION + suffix, font=FONT_UI,
+                 bg=C['panel'], fg=C['dim']).pack(side=tk.LEFT, anchor=tk.S, pady=4)
+        tk.Label(head, text="Windows RAM & process cleaner   ·   by Mikey",
+                 font=FONT_UI, bg=C['panel'], fg=C['dimmer']).pack(
+            anchor=tk.W, pady=(4, 0))
+
+    def _build_actions(self):
+        bar = tk.Frame(self, bg=C['bg'], padx=18, pady=12)
+        bar.pack(fill=tk.X)
+        self._app._mk_btn(bar, "  VIEW ON GITHUB  ", self._open_repo,
+                          C['btn_off']).pack(side=tk.LEFT)
+        self.check_btn = self._app._mk_btn(bar, "  CHECK FOR UPDATES  ",
+                                           self._check_updates, C['blue'])
+        self.check_btn.pack(side=tk.LEFT, padx=8)
+        self._msg = tk.Label(self, text="", font=FONT_UI, bg=C['bg'],
+                             fg=C['dim'], anchor=tk.W, padx=18)
+        self._msg.pack(fill=tk.X)
+
+    def _build_changelog(self):
+        tk.Label(self, text="CHANGELOG", font=FONT_UI_BOLD, bg=C['bg'],
+                 fg=C['dimmer'], anchor=tk.W, padx=18).pack(fill=tk.X, pady=(8, 4))
+        wrap = tk.Frame(self, bg=C['bg'])
+        wrap.pack(fill=tk.BOTH, expand=True, padx=18, pady=(0, 14))
+        box = tk.Text(wrap, font=FONT_UI, wrap=tk.WORD, bd=0,
+                      bg=C['row'], fg=C['text'], padx=12, pady=10,
+                      highlightthickness=0, insertwidth=0, cursor="arrow")
+        sb = ttk.Scrollbar(wrap, orient=tk.VERTICAL, command=box.yview,
+                           style="R.Vertical.TScrollbar")
+        box.configure(yscrollcommand=sb.set)
+        box.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        sb.pack(side=tk.RIGHT, fill=tk.Y, padx=(4, 0))
+
+        box.tag_configure("ver", foreground=C['green'],
+                          font=("Consolas", 11, "bold"), spacing1=10, spacing3=4)
+        box.tag_configure("body", spacing3=3, lmargin1=0, lmargin2=12)
+        for raw in load_changelog().splitlines():
+            if raw.startswith("# "):                 # the file's own H1
+                continue
+            if raw.startswith("## "):
+                box.insert(tk.END, raw[3:] + "\n", "ver")
+            else:
+                box.insert(tk.END, raw + "\n", "body")
+        box.configure(state=tk.DISABLED)
+
+    def _open_repo(self):
+        webbrowser.open(f"https://github.com/{updater.GITHUB_REPO}")
+
+    def _check_updates(self):
+        """Manual check. Updates normally install themselves silently, so this
+        exists to answer "am I current?" on demand."""
+        self.check_btn.config(state=tk.DISABLED, text="  CHECKING...  ")
+        self._msg.config(text="Checking GitHub...")
+
+        def _work():
+            info = updater.check_now()
+            self.after(0, _done, info)
+
+        def _done(info):
+            if not self.winfo_exists():
+                return
+            self.check_btn.config(state=tk.NORMAL, text="  CHECK FOR UPDATES  ")
+            if info is None:
+                self._msg.config(text=f"You are on the latest version (v{APP_VERSION}).")
+                return
+            self._msg.config(text=f"v{info.version} found - downloading...")
+            self._app._download_update(info, silent=True)
+
+        threading.Thread(target=_work, daemon=True).start()
 
 
 class FilterChip(tk.Label):
@@ -585,12 +704,23 @@ class RamBo(tk.Tk):
 
         wordmark = tk.Frame(bar, bg=C['bg'])
         wordmark.pack(side=tk.LEFT)
-        tk.Label(wordmark, text="RAMBO", font=("Consolas", 21, "bold"),
-                 bg=C['bg'], fg=C['green']).pack(side=tk.LEFT, anchor=tk.S)
-        tk.Label(wordmark, text="  RAM & Process Cleaner", font=FONT_UI,
-                 bg=C['bg'], fg=C['dim']).pack(side=tk.LEFT, anchor=tk.S, pady=4)
-        tk.Label(wordmark, text="  v" + APP_VERSION, font=FONT_UI,
-                 bg=C['bg'], fg=C['dimmer']).pack(side=tk.LEFT, anchor=tk.S, pady=4)
+        mark = tk.Label(wordmark, text="RAMBO", font=("Consolas", 21, "bold"),
+                        bg=C['bg'], fg=C['green'])
+        mark.pack(side=tk.LEFT, anchor=tk.S)
+        tag = tk.Label(wordmark, text="  RAM & Process Cleaner", font=FONT_UI,
+                       bg=C['bg'], fg=C['dim'])
+        tag.pack(side=tk.LEFT, anchor=tk.S, pady=4)
+        ver = tk.Label(wordmark, text="  v" + APP_VERSION, font=FONT_UI,
+                       bg=C['bg'], fg=C['dimmer'])
+        ver.pack(side=tk.LEFT, anchor=tk.S, pady=4)
+
+        # The whole wordmark opens About / Changelog. Brightening the version
+        # on hover is what signals it is clickable — there is no other cue.
+        for widget in (mark, tag, ver):
+            widget.bind("<Button-1>", lambda _: self._show_about())
+            widget.configure(cursor="hand2")
+            widget.bind("<Enter>", lambda _, v=ver: v.configure(fg=C['text']))
+            widget.bind("<Leave>", lambda _, v=ver: v.configure(fg=C['dimmer']))
 
         btns = tk.Frame(bar, bg=C['bg'])
         btns.pack(side=tk.RIGHT)
@@ -631,6 +761,16 @@ class RamBo(tk.Tk):
             self.elevate_btn.pack(side=tk.RIGHT, padx=(6, 0))
 
     # ── Self-update ────────────────────────────────────────────────────────────
+    def _show_about(self):
+        """Open the About / Changelog window, or raise the open one."""
+        existing = getattr(self, '_about', None)
+        if existing is not None and existing.winfo_exists():
+            existing.deiconify()
+            existing.lift()
+            existing.focus_force()
+            return
+        self._about = AboutWindow(self)
+
     def _poll_update(self):
         """Start the update as soon as the background check finds one.
 

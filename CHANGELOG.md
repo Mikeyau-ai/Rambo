@@ -3,12 +3,21 @@
 All notable changes to RamBo. Newest first. Bump `APP_VERSION` in `main.pyw`
 and add an entry here for every release.
 
-Versions below 1.0.0 are reconstructed from the commit history and the dated
-design docs in `docs/superpowers/`. They were never cut as numbered builds —
-the alpha ran straight from source — so the numbers are a reading of that
-history rather than tags that once existed.
+Versions below 1.0.0 are reconstructed from the commit history and the design
+docs in `docs/superpowers/`. They were never cut as numbered builds — the alpha
+ran straight from source — so the numbers are a reading of that history rather
+than tags that once existed.
 
-## 1.1.0 — 2026-08-28
+## 1.2.0
+- **About / Changelog window**, opened by clicking the RAMBO wordmark in the
+  header. Shows the running version, a link to the repo, a manual **Check for
+  updates** button, and this changelog. The changelog is bundled into the
+  build, so it reads the same offline and always describes the version in front
+  of you rather than whatever is newest on GitHub.
+- The header flags **(running from source)** on a dev run, where the updater is
+  inert and "no updates" therefore means something different.
+
+## 1.1.0
 - RamBo now ships as an **installer** (`RamBo-Setup.exe`) instead of a zip.
   Running `RamBo.exe` from inside the archive failed with *"Failed to load
   Python DLL"*, because Explorer unpacks only the exe and not the `_internal`
@@ -50,7 +59,7 @@ history rather than tags that once existed.
   detects — including why Suspended is normal for Store apps, and what makes a
   process an Orphan.
 
-## 1.0.0 — 2026-08-27
+## 1.0.0
 - First public build, published to GitHub Releases.
 - **Self-update:** frozen builds check Releases on launch, download the new
   build and swap it in through a detached script, because a running exe cannot
@@ -74,18 +83,18 @@ history rather than tags that once existed.
 - Build fix: `--icon` and `--add-data` were both missing, so the exe carried
   PyInstaller's default icon and `iconbitmap()` failed once frozen.
 
-## 0.6.0 — 2026-06-09 (alpha)
+## 0.6.0 (alpha)
 - **Orphan detection** — a non-system process whose parent no longer exists and
   which has been running for more than 12 hours. Typically a leftover helper or
   updater that was never cleaned up.
 - Every column sortable, with direction arrows in the headings.
 
-## 0.5.0 — 2026-05-29 (alpha)
+## 0.5.0 (alpha)
 - The process tree lists **all** processes rather than only ones with an issue,
   so RamBo works as a general process browser and not just a problem report.
 - Sort arrows added to the process tree headings.
 
-## 0.4.0 — 2026-05-18 (alpha)
+## 0.4.0 (alpha)
 - **Startup tab.** Reads HKCU Run, HKLM Run, HKLM WOW6432Node Run, the user and
   common Startup folders, and logon-triggered scheduled tasks.
 - Enable and disable entries by writing the `StartupApproved` registry byte
@@ -101,13 +110,13 @@ history rather than tags that once existed.
   scan errors are surfaced instead of being swallowed.
 - Rambo-themed app icon.
 
-## 0.3.0 — 2026-05-15 (alpha)
+## 0.3.0 (alpha)
 - **Working-set trim** via the Win32 `SetProcessWorkingSetSizeEx` API, in two
   modes: trim everything, or trim only the selected rows. Nothing is killed —
   Windows is simply asked to page out working-set RAM — and the amount freed is
   reported.
 
-## 0.2.0 — 2026-05-13 (alpha)
+## 0.2.0 (alpha)
 - **Live scan** — the list auto-refreshes on a 5-second timer.
 - **RAM bar** in the status bar showing memory used against total.
 - Group-aware selection: clicking a Main row selects its whole process group,
@@ -116,7 +125,7 @@ history rather than tags that once existed.
   an app's helper processes without taking the app itself down.
 - Delete key kills the current selection.
 
-## 0.1.0 — 2026-05 (alpha)
+## 0.1.0 (alpha)
 - First working build, predating version control. Single-file tkinter GUI with
   a dark palette, using `psutil` for process enumeration and `ctypes`/Win32 for
   everything psutil does not cover.

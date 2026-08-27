@@ -194,6 +194,20 @@ def start_check():
     threading.Thread(target=_work, daemon=True, name='update-check').start()
 
 
+def check_now():
+    """The explicit "check for updates" path: a newer release, or None.
+
+    Unlike start_check() this ignores the auto-check setting and any version
+    the user previously skipped, and it runs synchronously. The user asked, so
+    answer — but call it off the UI thread, since it makes a network request.
+    """
+    info = _fetch_latest()
+    if info and info.url and _parse_version(info.version) > _parse_version(
+            current_version()):
+        return info
+    return None
+
+
 def is_check_done():
     """True once the background check has finished (or never started)."""
     return _done.is_set()
