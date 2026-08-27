@@ -219,6 +219,29 @@ def wait_for_result(timeout=0.0):
     return _result
 
 
+def mark_updating(version):
+    """Record the version we are restarting into, so the new build can say so.
+
+    Written just before the installer is launched. The updated build reads it
+    back on its first run — without this it has no way to know it arrived by
+    update rather than by an ordinary launch."""
+    _save_setting('updated_to', version)
+
+
+def take_update_notice():
+    """The version we just updated into, once, or None.
+
+    Cleared on read so the message shows on the first launch after an update
+    and not on every launch thereafter. The version has to match the running
+    build: if the install did not actually land, there is nothing to announce.
+    """
+    version = _load_settings().get('updated_to')
+    if not version:
+        return None
+    _save_setting('updated_to', None)
+    return version if version == current_version() else None
+
+
 def skip_version(version):
     """Remember that the user declined this version, so it isn't re-offered."""
     _save_setting('update_skip_version', version)

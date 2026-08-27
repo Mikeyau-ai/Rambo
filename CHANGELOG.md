@@ -8,6 +8,19 @@ docs in `docs/superpowers/`. They were never cut as numbered builds — the alph
 ran straight from source — so the numbers are a reading of that history rather
 than tags that once existed.
 
+## 1.4.0
+- Updates **ask before installing** again. 1.2.0 applied them without a word,
+  which meant an update could land mid-session with no explanation. RamBo now
+  says a new version is available, shows what changed, and asks. Everything
+  after Yes runs without further interaction: it downloads, installs and
+  reopens on its own.
+- **No** skips that version for good, **Cancel** asks again next launch, and
+  the **UPDATE** button stays available either way.
+- The updated build now **confirms what it is** on first launch — the status
+  bar shows *Updated to vX.Y.Z* in green for a few seconds, then hands itself
+  back. Without it a silent install just restarts the app and nothing says it
+  worked.
+
 ## 1.3.0
 - The installer now creates a **desktop shortcut by default**, with a checkbox
   to decline it. Declining sticks: Inno records the choice under the uninstall

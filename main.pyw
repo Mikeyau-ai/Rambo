@@ -45,7 +45,7 @@ import updater
 import sounds
 
 # Single source of truth for the version; the release scripts parse this.
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.4.0"
 
 # ── Palette ────────────────────────────────────────────────────────────────────
 C = {
@@ -613,6 +613,12 @@ class RamBo(tk.Tk):
         # Populate the list without waiting for a click. Deferred rather than
         # called inline so the window paints before the scan thread starts.
         self.after(200, self._start_scan)
+        # If this launch is the one right after an update, say so. Deferred
+        # past the scan's own status message so it is not immediately
+        # overwritten, and it wins over "Scan complete" for a few seconds.
+        updated = updater.take_update_notice()
+        if updated:
+            self.after(400, self._announce_update, updated)
 
     # ── UI ─────────────────────────────────────────────────────────────────────
     def _init_style(self):
@@ -772,17 +778,39 @@ class RamBo(tk.Tk):
         self._about = AboutWindow(self)
 
     def _poll_update(self):
-        """Start the update as soon as the background check finds one.
+        """Offer the update once the background check finds one.
+
+        Asking first, then installing without further interaction, is the
+        shape people expect: the decision is theirs, but they only make it
+        once. The UPDATE button stays visible so a declined update can still
+        be started later.
 
         Polls rather than calling back from the worker thread, because Tk
         widgets may only be touched from the thread that created them."""
         self._update_info = updater.wait_for_result(0)
         if self._update_info:
-            # Updates apply themselves — no prompt. The UPDATE button only
-            # appears if that fails, as a manual fallback.
-            self._download_update(self._update_info, silent=True)
+            self._show_update_button()
+            self._show_update()
         elif not updater.is_check_done():
             self.after(1500, self._poll_update)
+
+    def _announce_update(self, version):
+        """Confirm, on the first launch after an update, which version landed.
+
+        The install itself is silent, so without this the app simply restarts
+        and nothing tells the user it worked. Shown in the status bar rather
+        than a dialog: it is confirmation, not a question."""
+        self.status_var.set(f"✓  Updated to v{version}")
+        self.status_lbl.config(fg=C['green'])
+        # Hand the status line back after a few seconds; a scan or a live tick
+        # would otherwise be stuck behind a message about a finished update.
+        self.after(6000, self._clear_update_notice)
+
+    def _clear_update_notice(self):
+        """Return the status bar to its normal colour and text."""
+        self.status_lbl.config(fg=C['dim'])
+        if self.status_var.get().startswith("✓  Updated"):
+            self.status_var.set("Ready")
 
     def _show_update_button(self):
         """Expose the manual UPDATE button, used when the silent path fails."""
@@ -791,7 +819,11 @@ class RamBo(tk.Tk):
         self._fit_topbar()
 
     def _show_update(self):
-        """Offer the update explicitly. Only reachable via the fallback button."""
+        """Ask whether to update. Shown automatically when one is found, and
+        reachable again from the UPDATE button after a Cancel.
+
+        The question is asked once; everything after a Yes runs without further
+        interaction, which is why the prompt says so up front."""
         info = self._update_info
         if not info:
             return
@@ -801,8 +833,9 @@ class RamBo(tk.Tk):
             f"RamBo v{info.version} is available "
             f"(you have v{APP_VERSION}).\n\n"
             f"{notes}\n\n"
-            f"Download {info.size_mb:.1f} MB and restart now?\n\n"
-            f"Choosing No skips this version.",
+            f"Install it now? RamBo will download {info.size_mb:.1f} MB, "
+            f"update itself and reopen — no further prompts.\n\n"
+            f"No skips this version. Cancel asks again next launch.",
             icon="info", parent=self)
         if choice is None:            # Cancel — ask again next launch
             return
@@ -811,7 +844,8 @@ class RamBo(tk.Tk):
             self.update_btn.pack_forget()
             self.status_var.set(f"Skipped v{info.version}")
             return
-        self._download_update(info)
+        # Silent from here on: the user has already answered the only question.
+        self._download_update(info, silent=True)
 
     def _download_update(self, info, silent=False):
         """Fetch the release installer on a worker thread, reporting progress.
@@ -857,6 +891,11 @@ class RamBo(tk.Tk):
             self.after(500, self._install_update, path, silent)
             return
         self.status_var.set("Installing update…")
+        # Recorded before the handover: once the installer starts, this process
+        # is about to be closed, and the new build needs to know it arrived by
+        # update so it can say "Updated to ...".
+        updater.mark_updating(self._update_info.version
+                              if self._update_info else updater.current_version())
         if updater.run_installer(path):
             # The installer needs this process gone before it can replace the
             # files; its [Run] entry relaunches RamBo when it finishes.
@@ -1417,8 +1456,10 @@ class RamBo(tk.Tk):
 
         self.status_var  = tk.StringVar(value="Ready — press SCAN to begin")
         self.summary_var = tk.StringVar(value="")
-        tk.Label(bar, textvariable=self.status_var,
-                 bg=C['panel'], fg=C['dim'], font=FONT_UI).pack(side=tk.LEFT)
+        # Kept as an attribute so _announce_update can tint it green.
+        self.status_lbl = tk.Label(bar, textvariable=self.status_var,
+                                   bg=C['panel'], fg=C['dim'], font=FONT_UI)
+        self.status_lbl.pack(side=tk.LEFT)
 
         # RAM meter (right side)
         ram_frame = tk.Frame(bar, bg=C['panel'])
