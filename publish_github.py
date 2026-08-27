@@ -6,9 +6,13 @@ The download link people use is:
     https://github.com/<owner>/<repo>/releases/latest/download/RamBo-Setup.exe
 
 That URL is permanent and always resolves to the newest release, so it can be
-posted once and never revisited. RamBo.zip is uploaded alongside it because
-updater.py downloads that asset by name to apply in-app updates. Bumping APP_VERSION in main.pyw and rebuilding
+posted once and never revisited. Bumping APP_VERSION in main.pyw and rebuilding
 is all it takes to update what that link serves.
+
+RamBo.zip is uploaded alongside it for two reasons: builds up to v1.0.0 shipped
+an updater that fetches the zip by name, so publishing it keeps those installs
+able to reach a newer version, and it remains the portable download for anyone
+who does not want an installer.
 
 Requires the GitHub CLI, authenticated once:
     winget install GitHub.cli
@@ -60,7 +64,13 @@ def check_prerequisites():
 
 
 def changelog(tag):
-    """Commit subjects since the previous tag, as markdown bullets."""
+    """Commit subjects since the previous tag, as markdown bullets.
+
+    Tags are fetched first: releases are created through the GitHub API, so a
+    clone that has never fetched them sees no previous tag and would silently
+    report every release as the first one."""
+    subprocess.run(['git', 'fetch', '--tags', '--quiet'],
+                   capture_output=True, text=True)
     previous = subprocess.run(
         ['git', 'describe', '--tags', '--abbrev=0', tag + '^'],
         capture_output=True, text=True)
@@ -118,7 +128,7 @@ def publish(tag, assets):
     view = run(['repo', 'view', '--json', 'nameWithOwner', '-q', '.nameWithOwner'])
     slug = view.stdout.strip()
     print("\n  Permanent download link (paste this into Discord):")
-    print(f"  https://github.com/{slug}/releases/latest/download/RamBo.zip")
+    print(f"  https://github.com/{slug}/releases/latest/download/RamBo-Setup.exe")
     print("\n  Release page:")
     print(f"  https://github.com/{slug}/releases/latest\n")
     return True
@@ -129,7 +139,8 @@ def main():
         print("  Skipping release.")
         return 0
     tag = 'v' + get_version()
-    # The zip still ships: updater.py fetches it by name for in-app updates.
+    # The zip still ships so that pre-1.1.0 installs, whose updater looks for
+    # RamBo.zip rather than the installer, can still update themselves.
     assets = [make_zip()]
     if os.path.exists(SETUP_PATH):
         assets.insert(0, SETUP_PATH)
