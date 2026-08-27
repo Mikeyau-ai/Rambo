@@ -17,12 +17,6 @@ Start Menu shortcut and an entry in Apps & Features.
 > The installer is unsigned, so Windows SmartScreen shows *"Windows protected
 > your PC"*. Click **More info** → **Run anyway**.
 
-`RamBo.zip` is published alongside it — the same build as a plain archive, used
-by RamBo's own updater. If you download that by hand, extract the whole folder
-first: running `RamBo.exe` from inside the zip fails with *"Failed to load
-Python DLL"*, because Explorer only unpacks the exe and not the `_internal`
-folder next to it.
-
 ## What it does
 
 **Processes tab**
@@ -61,7 +55,7 @@ build.bat
 
 | Command | Result |
 | --- | --- |
-| `build.bat` | Build → installer + zip → GitHub release |
+| `build.bat` | Build → installer → GitHub release |
 | `build.bat --no-upload` | Build only |
 
 The installer step compiles `installer.iss` with Inno Setup 6, which must be

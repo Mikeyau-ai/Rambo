@@ -106,7 +106,7 @@ def is_enabled():
 class UpdateInfo:
     """A newer release found on GitHub, ready to download."""
     version: str        # '1.2.3' (tag with any leading 'v' stripped)
-    url: str            # direct .zip asset download URL
+    url: str            # direct installer download URL
     size: int           # asset size in bytes (0 if GitHub didn't report one)
     notes: str          # release body, shown as a short changelog
 

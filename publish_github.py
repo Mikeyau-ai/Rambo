@@ -9,10 +9,11 @@ That URL is permanent and always resolves to the newest release, so it can be
 posted once and never revisited. Bumping APP_VERSION in main.pyw and rebuilding
 is all it takes to update what that link serves.
 
-RamBo.zip is uploaded alongside it for two reasons: builds up to v1.0.0 shipped
-an updater that fetches the zip by name, so publishing it keeps those installs
-able to reach a newer version, and it remains the portable download for anyone
-who does not want an installer.
+The installer is the only asset. Releases up to v1.1.0 also carried a plain
+RamBo.zip, which is what the pre-installer updater downloaded; every build from
+v1.1.0 on updates through the installer instead, so the archive has no
+remaining consumer. v1.1.0 keeps its copy so anything still on the old scheme
+has a way forward.
 
 Requires the GitHub CLI, authenticated once:
     winget install GitHub.cli
@@ -22,7 +23,7 @@ import os
 import subprocess
 import sys
 
-from package import SETUP_PATH, get_version, make_zip
+from package import SETUP_PATH, get_version
 from updater import GITHUB_REPO      # single source of truth for the repo
 
 GH = 'gh'
@@ -94,14 +95,12 @@ def build_notes(tag):
         f"## What's new\n\n{changelog(tag)}\n\n"
         "---\n\n"
         "Download `RamBo-Setup.exe` and run it. It installs for the current "
-        "user only, so there is no admin prompt.\n\n"
+        "user only, so there is no admin prompt, and it adds a Start Menu "
+        "entry plus an uninstaller.\n\n"
         "The installer is unsigned, so Windows SmartScreen will show "
         "\"Windows protected your PC\" — click **More info** then "
         "**Run anyway**.\n\n"
-        "`RamBo.zip` is the same build as a plain archive, used by RamBo's "
-        "own updater. Downloaded by hand it must be extracted in full before "
-        "running `RamBo.exe` — launching it from inside the zip fails "
-        "with \"Failed to load Python DLL\"."
+        "Installed builds update themselves from here automatically."
     )
 
 
@@ -139,14 +138,11 @@ def main():
         print("  Skipping release.")
         return 0
     tag = 'v' + get_version()
-    # The zip still ships so that pre-1.1.0 installs, whose updater looks for
-    # RamBo.zip rather than the installer, can still update themselves.
-    assets = [make_zip()]
-    if os.path.exists(SETUP_PATH):
-        assets.insert(0, SETUP_PATH)
-    else:
-        print("  No dist/RamBo-Setup.exe — releasing the zip only.")
-    return 0 if publish(tag, assets) else 1
+    if not os.path.exists(SETUP_PATH):
+        print(f"  No {SETUP_PATH} — run build_installer.py first.")
+        return 1
+    print(f"  {os.path.getsize(SETUP_PATH) / 1024 ** 2:.1f} MB -> {SETUP_PATH}")
+    return 0 if publish(tag, [SETUP_PATH]) else 1
 
 
 if __name__ == '__main__':
