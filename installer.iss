@@ -58,7 +58,12 @@ RestartApplications=no
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
-Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+; Ticked by default — the desktop icon is how most people will actually launch
+; RamBo — but it is a task rather than a fixed [Icons] entry so it can be
+; unticked. Inno records the choice under the uninstall key and restores it on
+; the next run, so a silent self-update honours an earlier opt-out instead of
+; quietly putting the icon back.
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
 [Files]
 ; The entire one-dir bundle: RamBo.exe plus _internal\ (python3xx.dll, the

@@ -8,6 +8,12 @@ docs in `docs/superpowers/`. They were never cut as numbered builds — the alph
 ran straight from source — so the numbers are a reading of that history rather
 than tags that once existed.
 
+## 1.3.0
+- The installer now creates a **desktop shortcut by default**, with a checkbox
+  to decline it. Declining sticks: Inno records the choice under the uninstall
+  key and restores it on the next run, so a silent self-update will not quietly
+  put the icon back.
+
 ## 1.2.0
 - **About / Changelog window**, opened by clicking the RAMBO wordmark in the
   header. Shows the running version, a link to the repo, a manual **Check for
