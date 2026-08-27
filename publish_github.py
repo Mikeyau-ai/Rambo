@@ -65,20 +65,24 @@ def check_prerequisites():
 
 
 def changelog(tag):
-    """Commit subjects since the previous tag, as markdown bullets.
+    """Commit subjects since the previous release tag, as markdown bullets.
 
-    Tags are fetched first: releases are created through the GitHub API, so a
-    clone that has never fetched them sees no previous tag and would silently
-    report every release as the first one."""
+    The range is derived from HEAD, not from `tag`. These notes are built
+    before `gh release create` makes the tag, so `<tag>^` does not resolve yet
+    and every release came out labelled "First release." HEAD's ancestry is
+    always resolvable, and publishing always happens from HEAD.
+
+    Tags are fetched first because releases are created through the GitHub API,
+    so a clone that has never fetched them sees no previous tag either."""
     subprocess.run(['git', 'fetch', '--tags', '--quiet'],
                    capture_output=True, text=True)
     previous = subprocess.run(
-        ['git', 'describe', '--tags', '--abbrev=0', tag + '^'],
+        ['git', 'describe', '--tags', '--abbrev=0', 'HEAD^'],
         capture_output=True, text=True)
     if previous.returncode != 0 or not previous.stdout.strip():
         # First release: don't replay the entire history as a changelog.
         return '- First release.'
-    span = f'{previous.stdout.strip()}..{tag}'
+    span = f'{previous.stdout.strip()}..HEAD'
     log = subprocess.run(['git', 'log', span, '--no-merges', '--pretty=%s'],
                          capture_output=True, text=True)
     lines = [l.strip() for l in log.stdout.splitlines() if l.strip()]
