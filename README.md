@@ -17,6 +17,8 @@ Start Menu shortcut and an entry in Apps & Features.
 > The installer is unsigned, so Windows SmartScreen shows *"Windows protected
 > your PC"*. Click **More info** → **Run anyway**.
 
+See [CHANGELOG.md](CHANGELOG.md) for what changed in each version.
+
 ## What it does
 
 **Processes tab**
