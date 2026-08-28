@@ -24,6 +24,8 @@ _VARIANTS = {
     # gunshots these deliberately do not vary.
     'double':  ('DoubleKill.wav',),
     'multi':   ('MultiKill.wav',),
+    'ultra':   ('UltraKill.wav',),
+    'monster': ('MonsterKill.wav',),
 }
 
 # Last variant played per group, so the same take is never heard twice running.

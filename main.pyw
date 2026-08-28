@@ -544,12 +544,17 @@ LIVE_MAX_MS     = 10000
 # the window far. If you raise the frequency, keep the swing small: it was a
 # *large* fast oscillation that flickered, not a fast one.
 # tools/preview_killfx.py imports these to compare profiles side by side.
-# Kill streak. Kills landing within this window of each other accumulate: two
-# is a Double Kill, three or more a Multi Kill. The window restarts on every
+# Kill streak. Kills landing within this window of each other accumulate, and
+# the ladder below turns the running total into an announcement. The window
+# restarts on every
 # kill, so a sustained run keeps escalating rather than expiring on a fixed
 # schedule. Counted per process, not per click — killing three at once is a
 # multi kill by any reasonable reading — but announced only once per action.
 KILL_STREAK_WINDOW = 10.0  # seconds
+# Thresholds, highest first: the streak earns the first line it reaches or
+# exceeds, and anything below the smallest is announced with the gunshot alone.
+# Adding a rung is one clip in assets/sfx plus one entry here.
+STREAK_LINES = ((5, 'monster'), (4, 'ultra'), (3, 'multi'), (2, 'double'))
 # winsound plays one clip at a time, so the announcer waits for the gunshot to
 # get out of the way instead of cutting it off.
 STREAK_DELAY_MS    = 750
@@ -1263,10 +1268,9 @@ class RamBo(tk.Tk):
             self._streak = 0          # the run went cold; start again
         self._last_kill = now
         self._streak += killed
-        if self._streak >= 3:
-            return 'multi'
-        if self._streak == 2:
-            return 'double'
+        for threshold, level in STREAK_LINES:
+            if self._streak >= threshold:
+                return level
         return None
 
     def _announce_streak(self, killed):

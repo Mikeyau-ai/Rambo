@@ -16,6 +16,7 @@ Billed per character, so the whole set is a rounding error against the pool.
 """
 import argparse
 import array
+import math
 import os
 import sys
 import wave
@@ -37,9 +38,10 @@ OUT_DIR = ROOT / 'assets' / 'sfx'
 SR = 24000
 PEAK = 0.82              # same headroom as the gunshots, so nothing jumps out
 
-# "Adam - Dominant, Firm". Picked from the account's voices as the closest to
-# an arena announcer: deep and declarative rather than warm or conversational.
-VOICE_ID = 'pNInz6obpgDQGcFmaJgB'
+# "Harry - Fierce Warrior", the roughest male voice on the account. Pitched
+# down hard below, which is also why its youth stops mattering: what survives
+# the shift is the rasp, which is the part worth keeping.
+VOICE_ID = 'SOYHLrjzK2X1ezoPC6cr'
 ENDPOINT = f'https://api.elevenlabs.io/v1/text-to-speech/{VOICE_ID}'
 
 # Low stability makes the read more theatrical; the exaggeration is the point
@@ -49,22 +51,125 @@ VOICE_SETTINGS = {
     'similarity_boost': 0.75,
     'style': 0.65,
     'use_speaker_boost': True,
+    # Slightly under a normal read. Pitching down by resampling already
+    # stretches the clip by 1/PITCH; this adds to it rather than cancelling
+    # it, because the weight of the delivery is the point here.
+    'speed': 0.95,
 }
 
+# Post-processing. The raw read is a normal speaking voice; an arena announcer
+# is deeper and lives in a big room. Both are done here rather than asked of
+# the model, because pitch and reverb are exactly the things TTS will not give
+# you consistently across separate generations.
+PITCH = 0.62             # playback rate; below 1.0 deepens and slows the read
+DRIVE = 3.2              # soft-clip amount; higher is grittier and more shouted
+ECHO_MS = 95             # first repeat, in milliseconds
+ECHO_DECAY = 0.5         # level of each repeat relative to the one before
+ECHO_REPEATS = 3         # taps after the dry signal
+
+# (filename, spoken text, per-line voice-setting overrides)
+#
+# Punctuation is doing real work here. An exclamation mark makes the model
+# lift at the end of the line; a full stop makes it fall away. Multi and Ultra
+# read better landing low, while Double and Monster want the lift.
+#
+# Regenerating is not idempotent — the same request comes back with a slightly
+# different read every time — so once a line is right, leave it alone and use
+# --only to work on the others.
+# `pitch` overrides the global PITCH for that line; everything else is passed
+# through to the model as a voice setting. Length runs as 1/(pitch x speed),
+# so the two are adjusted together to change tone without changing pace.
 LINES = [
-    ('DoubleKill', 'Double kill!'),
-    ('MultiKill', 'Multi kill!'),
+    ('DoubleKill', 'Double kill!', {'speed': 1.00, 'pitch': 0.59}),
+    # Stability raised for the same reason as Ultra, and then some: at 0.35
+    # the slow read kept dropping into creak, landing this line a whole octave
+    # below the others (75Hz against ~152Hz) rather than merely deeper.
+    ('MultiKill', 'Multi kill...', {'speed': 0.83, 'stability': 0.65}),
+    # Higher stability than the rest. The low-stability read is expressive but
+    # inconsistent between takes, and this line kept lifting on the last
+    # syllable; a flatter delivery stays down where the ellipsis puts it.
+    ('UltraKill', 'Ultra kill...', {'speed': 0.86, 'pitch': 0.65,
+                                    'stability': 0.62}),
+    ('MonsterKill', 'Monster kill!', {}),
 ]
 
 
-def to_mono_wav(pcm, path):
+def pitch_down(samples, factor):
+    """Resample so the voice sits `factor` times lower.
+
+    Reading the source at a fractional step and writing more samples than came
+    in scales every frequency by `factor` and stretches the clip to match. It
+    slows the delivery as well as deepening it, which for an announcer is the
+    right trade — a slower read lands heavier.
+    """
+    length = int(len(samples) / factor)
+    out = array.array('h', bytes(2 * length))
+    for i in range(length):
+        pos = i * factor
+        j = int(pos)
+        if j + 1 >= len(samples):
+            break
+        # Linear interpolation between neighbours; nearest-sample resampling
+        # of speech is audibly gritty.
+        out[i] = int(samples[j] + (samples[j + 1] - samples[j]) * (pos - j))
+    return out
+
+
+def saturate(samples, drive=DRIVE):
+    """Soft-clip the waveform to add harmonic grit.
+
+    tanh rounds the peaks rather than shearing them flat, which reads as a
+    voice pushed too hard through a PA instead of as digital clipping. Applied
+    to the dry signal only — running it after the echo would grind the tails
+    up as well and turn the tail into noise.
+    """
+    out = array.array('h', bytes(2 * len(samples)))
+    ceiling = math.tanh(drive)
+    for i, value in enumerate(samples):
+        shaped = math.tanh(drive * (value / 32768.0)) / ceiling
+        out[i] = int(max(-1.0, min(1.0, shaped)) * 32767)
+    return out
+
+
+def add_echo(samples, sr, delay_ms=ECHO_MS, decay=ECHO_DECAY, repeats=ECHO_REPEATS):
+    """Layer decaying repeats over the dry signal.
+
+    A multi-tap delay rather than real reverb: cheap, stdlib-only, and for a
+    short shouted line it reads as the same big empty room.
+    """
+    delay = max(1, int(sr * delay_ms / 1000))
+    out = array.array('h', bytes(2 * (len(samples) + delay * repeats)))
+    for i, value in enumerate(samples):
+        out[i] = value
+    for tap in range(1, repeats + 1):
+        gain = decay ** tap
+        offset = delay * tap
+        for i, value in enumerate(samples):
+            mixed = out[i + offset] + int(value * gain)
+            out[i + offset] = max(-32768, min(32767, mixed))
+    return out
+
+
+def split_overrides(overrides):
+    """Separate a line's post-processing settings from its voice settings."""
+    voice = dict(overrides or {})
+    return voice.pop('pitch', PITCH), voice
+
+
+def to_mono_wav(pcm, path, pitch=PITCH):
     """Write mono 16-bit PCM out as a peak-normalised WAV.
 
     TTS returns mono already, so unlike the sound-effect path there is nothing
-    to downmix — only the level to match.
+    to downmix. The voice is pitched down and given a tail on the way through.
     """
     samples = array.array('h')
     samples.frombytes(pcm[:len(pcm) // 2 * 2])
+
+    # Deepen first, then place it in the room; echoing a thin voice and then
+    # pitching the result down would drag the tails out with it.
+    samples = pitch_down(samples, pitch)
+    samples = saturate(samples)
+    samples = add_echo(samples, SR)
 
     peak = max((abs(s) for s in samples), default=1) or 1
     gain = (PEAK * 32767) / peak
@@ -79,15 +184,16 @@ def to_mono_wav(pcm, path):
     return len(samples) / SR
 
 
-def speak(key, text):
+def speak(key, text, overrides=None):
     """POST one line to the text-to-speech endpoint, returning raw PCM."""
+    settings = dict(VOICE_SETTINGS, **(overrides or {}))
     response = requests.post(
         ENDPOINT,
         headers={'xi-api-key': key, 'Content-Type': 'application/json'},
         params={'output_format': 'pcm_24000'},
         json={'text': text,
               'model_id': 'eleven_multilingual_v2',
-              'voice_settings': VOICE_SETTINGS},
+              'voice_settings': settings},
         verify=False,
         timeout=120,
     )
@@ -103,15 +209,24 @@ def main():
     parser.add_argument('--force', action='store_true',
                         help='regenerate lines that already exist')
     parser.add_argument('--env', help='path to a .env holding ELEVENLABS_API_KEY')
+    parser.add_argument('--only', help='comma-separated line names to regenerate')
     args = parser.parse_args()
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
+    wanted = {n.strip() for n in args.only.split(',')} if args.only else None
+    if wanted:
+        unknown = wanted - {c[0] for c in LINES}
+        if unknown:
+            sys.exit(f"Unknown line(s): {', '.join(sorted(unknown))}")
     pending = [c for c in LINES
-               if args.force or not (OUT_DIR / f'{c[0]}.wav').exists()]
+               if (wanted is None or c[0] in wanted)
+               and (args.force or not (OUT_DIR / f'{c[0]}.wav').exists())]
 
     print(f"  {len(pending)} line(s), voice {VOICE_ID}\n")
-    for name, text in pending:
-        print(f"    {name:<12} {text!r}")
+    for name, text, over in pending:
+        pitch, voice = split_overrides(over)
+        print(f"    {name:<12} {text!r:<18} pitch {pitch}"
+              f"  speed {voice.get('speed', VOICE_SETTINGS['speed'])}")
     if not pending:
         print("  Nothing to do (pass --force to regenerate).")
         return 0
@@ -121,8 +236,9 @@ def main():
 
     key = load_key(args.env)
     print()
-    for name, text in pending:
-        length = to_mono_wav(speak(key, text), OUT_DIR / f'{name}.wav')
+    for name, text, over in pending:
+        pitch, voice = split_overrides(over)
+        length = to_mono_wav(speak(key, text, voice), OUT_DIR / f'{name}.wav', pitch)
         print(f"    saved {name}.wav  ({length:.2f}s)")
     return 0
 

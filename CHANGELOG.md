@@ -9,10 +9,11 @@ ran straight from source — so the numbers are a reading of that history rather
 than tags that once existed.
 
 ## 1.5.0
-- **Kill streaks.** Kills landing within 10 seconds of each other stack up: two
-  earns a *Double Kill*, three or more a *Multi Kill*, called out by an
-  announcer over the gunshot. The window restarts on every kill, so a sustained
-  run keeps the streak alive rather than expiring on a fixed schedule.
+- **Kill streaks.** Kills landing within 10 seconds of each other stack up:
+  two earns a *Double Kill*, three a *Multi Kill*, four an *Ultra Kill*, and
+  five or more a *Monster Kill*, called out by an announcer over the gunshot.
+  The window restarts on every kill, so a sustained run keeps the streak alive
+  rather than expiring on a fixed schedule.
 - Kills are counted per process rather than per click, so clearing three rows
   in one go is a multi kill — announced once, not once per process.
 - The lines are generated in the style of an arena-shooter announcer rather
