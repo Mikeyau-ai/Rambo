@@ -8,6 +8,12 @@ docs in `docs/superpowers/`. They were never cut as numbered builds — the alph
 ran straight from source — so the numbers are a reading of that history rather
 than tags that once existed.
 
+## 1.4.2
+- A clearer message when antivirus removes the downloaded installer before it
+  can run. That gap between downloading an unsigned exe and executing it is
+  exactly what heuristic scanners act on, and "Update install failed" gave no
+  hint that an exclusion, not a retry, is the fix.
+
 ## 1.4.1
 - Filter tooltips appear under the chip you are hovering, instead of in the
   top-left corner of the screen. On Windows a borderless window ignores a move

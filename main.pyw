@@ -46,7 +46,7 @@ import updater
 import sounds
 
 # Single source of truth for the version; the release scripts parse this.
-APP_VERSION = "1.4.1"
+APP_VERSION = "1.4.2"
 
 # ── Palette ────────────────────────────────────────────────────────────────────
 C = {
@@ -950,6 +950,26 @@ class RamBo(tk.Tk):
         if self._scanning or self._trimming or self._dying:
             self.after(500, self._install_update, path, silent)
             return
+
+        # The installer is an unsigned exe that was just downloaded and is
+        # about to be executed, which is a shape antivirus dislikes: some will
+        # quarantine it in the gap between the download finishing and this
+        # running it. Say so plainly rather than reporting a generic failure —
+        # the fix is an exclusion, not a retry.
+        if not os.path.exists(path):
+            self._show_update_button()
+            self.status_var.set(
+                "Update blocked — antivirus removed the downloaded installer")
+            if not silent:
+                messagebox.showwarning(
+                    "Update blocked",
+                    "The downloaded installer disappeared before it could run.\n\n"
+                    "Antivirus software usually causes this. Allow "
+                    "RamBo-Setup.exe, or install the update by hand from the "
+                    "releases page.",
+                    parent=self)
+            return
+
         self.status_var.set("Installing update…")
         # Recorded before the handover: once the installer starts, this process
         # is about to be closed, and the new build needs to know it arrived by

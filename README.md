@@ -97,3 +97,27 @@ The check is stdlib-only, runs on a background thread, and fails silently when
 offline. It is disabled entirely when running from source, so a dev tree is
 never overwritten by a published build. To turn it off in an installed build,
 set `"update_check": false` in `%LOCALAPPDATA%\RamBo\settings.json`.
+
+## Antivirus
+
+RamBo is unsigned, and updating means downloading an executable and running it
+— a shape heuristic antivirus dislikes regardless of what the program does.
+AVG and Avast in particular make this messy: the installer may be blocked and
+rolled back, held for approval, then allowed through on a second attempt.
+
+The update still completes. One visible side effect is that the version shown
+in Apps & Features can lag behind the version actually installed, because the
+file writes go through while the registry writes get reverted. RamBo itself is
+unaffected — it reads its version from the running build, not the registry, so
+the About window and the update check are always right.
+
+Adding an exclusion for both of these makes it clean, and is also worth doing
+for scan speed — an antivirus that hooks process access can multiply the cost
+of a scan several times over:
+
+```
+%LOCALAPPDATA%\Programs\RamBo
+%LOCALAPPDATA%\RamBo
+```
+
+Signing the installer is the real fix, and needs a code-signing certificate.
