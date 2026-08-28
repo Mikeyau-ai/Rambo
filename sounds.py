@@ -8,7 +8,7 @@ Stdlib only: winsound ships with CPython on Windows and plays a 16-bit PCM
 WAV asynchronously, which is all this needs. No mixer, no extra dependency,
 nothing new in the PyInstaller bundle beyond the WAV files themselves.
 
-Public API: play_kill(), play_blocked().
+Public API: play_kill(), play_blocked(), play_streak().
 """
 import os
 import random
@@ -20,6 +20,10 @@ import winsound
 _VARIANTS = {
     'kill':    ('Gunshot_01.wav', 'Gunshot_02.wav', 'Gunshot_03.wav'),
     'blocked': ('Ricochet_01.wav', 'Ricochet_02.wav', 'Ricochet_03.wav'),
+    # One take each. An announcer is meant to be recognisable, so unlike the
+    # gunshots these deliberately do not vary.
+    'double':  ('DoubleKill.wav',),
+    'multi':   ('MultiKill.wav',),
 }
 
 # Last variant played per group, so the same take is never heard twice running.
@@ -66,3 +70,12 @@ def play_kill():
 def play_blocked():
     """Ricochet — the kill was refused, denied, or the process was already gone."""
     _play('blocked')
+
+
+def play_streak(level):
+    """Announce a kill streak. `level` is 'double' or 'multi'.
+
+    Called on a delay rather than straight after the gunshot: winsound plays
+    one sound at a time, so an immediate second call would cut the gunshot off
+    mid-shot instead of layering over it."""
+    _play(level)

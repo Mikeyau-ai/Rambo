@@ -46,7 +46,7 @@ import updater
 import sounds
 
 # Single source of truth for the version; the release scripts parse this.
-APP_VERSION = "1.4.2"
+APP_VERSION = "1.5.0"
 
 # ── Palette ────────────────────────────────────────────────────────────────────
 C = {
@@ -544,6 +544,16 @@ LIVE_MAX_MS     = 10000
 # the window far. If you raise the frequency, keep the swing small: it was a
 # *large* fast oscillation that flickered, not a fast one.
 # tools/preview_killfx.py imports these to compare profiles side by side.
+# Kill streak. Kills landing within this window of each other accumulate: two
+# is a Double Kill, three or more a Multi Kill. The window restarts on every
+# kill, so a sustained run keeps escalating rather than expiring on a fixed
+# schedule. Counted per process, not per click — killing three at once is a
+# multi kill by any reasonable reading — but announced only once per action.
+KILL_STREAK_WINDOW = 10.0  # seconds
+# winsound plays one clip at a time, so the announcer waits for the gunshot to
+# get out of the way instead of cutting it off.
+STREAK_DELAY_MS    = 750
+
 SHAKE_PX        = 4        # peak horizontal offset of the recoil; 0 disables it
 SHAKE_MS        = 16       # per frame — one frame at 60Hz
 SHAKE_FRAMES    = 14       # 14 x 16ms = ~240ms of recoil
@@ -658,6 +668,8 @@ class RamBo(tk.Tk):
         self._row_tags      = {}   # iid → tag tuple last written to the tree
         self._dying         = set()   # iids mid kill-animation, not yet removed
         self._shaking       = False
+        self._streak        = 0     # kills inside the current window
+        self._last_kill     = 0.0   # monotonic clock of the last kill
         self._filter_pending = False  # a refresh held back by a running animation
         self._logo_img      = None      # kept alive; Tk does not own PhotoImages
         self._init_style()
@@ -1238,6 +1250,30 @@ class RamBo(tk.Tk):
             self.after(SHAKE_MS, step, i + 1)
 
         step()
+
+    def _register_kills(self, killed):
+        """Advance the kill streak, returning 'double', 'multi', or None.
+
+        The window is measured from the previous kill rather than from the
+        start of the run, so a steady stream of kills keeps the streak alive
+        for as long as it is sustained.
+        """
+        now = time.monotonic()
+        if now - self._last_kill > KILL_STREAK_WINDOW:
+            self._streak = 0          # the run went cold; start again
+        self._last_kill = now
+        self._streak += killed
+        if self._streak >= 3:
+            return 'multi'
+        if self._streak == 2:
+            return 'double'
+        return None
+
+    def _announce_streak(self, killed):
+        """Play the streak line for this kill, if it earned one."""
+        level = self._register_kills(killed)
+        if level:
+            self.after(STREAK_DELAY_MS, sounds.play_streak, level)
 
     def _start_kill_anim(self, iid):
         """Mark a killed row as dying and begin its blink/fade."""
@@ -2097,6 +2133,7 @@ class RamBo(tk.Tk):
         elif killed:
             sounds.play_kill()
             self._shake()
+            self._announce_streak(killed)
 
         killed_pids       = {int(iid) for iid in sel}
         self._all_results = [r for r in self._all_results if r['pid'] not in killed_pids]
@@ -2168,6 +2205,7 @@ class RamBo(tk.Tk):
         elif killed:
             sounds.play_kill()
             self._shake()
+            self._announce_streak(killed)
 
         killed_pids       = {int(iid) for iid in child_iids}
         self._all_results = [r for r in self._all_results if r['pid'] not in killed_pids]

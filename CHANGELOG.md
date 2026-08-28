@@ -8,6 +8,16 @@ docs in `docs/superpowers/`. They were never cut as numbered builds — the alph
 ran straight from source — so the numbers are a reading of that history rather
 than tags that once existed.
 
+## 1.5.0
+- **Kill streaks.** Kills landing within 10 seconds of each other stack up: two
+  earns a *Double Kill*, three or more a *Multi Kill*, called out by an
+  announcer over the gunshot. The window restarts on every kill, so a sustained
+  run keeps the streak alive rather than expiring on a fixed schedule.
+- Kills are counted per process rather than per click, so clearing three rows
+  in one go is a multi kill — announced once, not once per process.
+- The lines are generated in the style of an arena-shooter announcer rather
+  than taken from any game. `tools/generate_voice.py` regenerates them.
+
 ## 1.4.2
 - A clearer message when antivirus removes the downloaded installer before it
   can run. That gap between downloading an unsigned exe and executing it is
