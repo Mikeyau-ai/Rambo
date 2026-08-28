@@ -46,7 +46,7 @@ import updater
 import sounds
 
 # Single source of truth for the version; the release scripts parse this.
-APP_VERSION = "1.5.0"
+APP_VERSION = "1.5.1"
 
 # ── Palette ────────────────────────────────────────────────────────────────────
 C = {

@@ -8,6 +8,14 @@ docs in `docs/superpowers/`. They were never cut as numbered builds — the alph
 ran straight from source — so the numbers are a reading of that history rather
 than tags that once existed.
 
+## 1.5.1
+- The announcer lines are tuned as a set rather than individually: the tone
+  steps down from Double to Multi to Ultra and then lifts into Monster, so a
+  chained streak reads as one phrase instead of four unrelated shouts.
+- Double, Multi and Ultra play about 10% quicker without their pitch moving.
+  `tools/generate_voice.py` gained WSOLA time-stretching for this — resampling,
+  which every other adjustment uses, changes speed and pitch together.
+
 ## 1.5.0
 - **Kill streaks.** Kills landing within 10 seconds of each other stack up:
   two earns a *Double Kill*, three a *Multi Kill*, four an *Ultra Kill*, and

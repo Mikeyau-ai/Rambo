@@ -88,7 +88,11 @@ LINES = [
     # Higher stability than the rest. The low-stability read is expressive but
     # inconsistent between takes, and this line kept lifting on the last
     # syllable; a flatter delivery stays down where the ellipsis puts it.
-    ('UltraKill', 'Ultra kill...', {'speed': 0.86, 'pitch': 0.65,
+    # The shipped file was re-pitched from a 0.65 take down to 141Hz, to sit a
+    # step below Multi so the ladder falls twice and then lifts into Monster.
+    # 0.58 is the equivalent factor, but a fresh take will not land on exactly
+    # the same frequency — check it against the others before shipping one.
+    ('UltraKill', 'Ultra kill...', {'speed': 0.86, 'pitch': 0.58,
                                     'stability': 0.62}),
     ('MonsterKill', 'Monster kill!', {}),
 ]
@@ -112,6 +116,67 @@ def pitch_down(samples, factor):
         # Linear interpolation between neighbours; nearest-sample resampling
         # of speech is audibly gritty.
         out[i] = int(samples[j] + (samples[j + 1] - samples[j]) * (pos - j))
+    return out
+
+
+def time_stretch(samples, rate, sr):
+    """Change duration by `rate` without moving pitch. rate < 1 shortens.
+
+    Resampling cannot be used here: it changes speed and pitch together, and
+    pitch is the thing that has to stay put. Instead overlapping windowed
+    segments are laid back down at a different spacing, so the waveform's
+    periodicity — and therefore its pitch — is untouched while the timeline
+    shifts underneath it.
+
+    Each segment is aligned against the waveform the previous one predicts
+    (WSOLA) rather than taken at a fixed stride. Without that search the
+    segments join out of phase and speech comes out warbling.
+    """
+    win_len = int(sr * 0.040) // 2 * 2          # ~40ms, even
+    syn_hop = win_len // 2
+    ana_hop = max(1, int(syn_hop / rate))
+    # The search has to be able to slide a whole pitch period, or it locks
+    # part-way into one and shortens it — which shows up as the voice drifting
+    # sharp. 8ms covers a period down to 125Hz, below anything here.
+    search = int(sr * 0.008)
+    window = [0.5 - 0.5 * math.cos(2 * math.pi * i / (win_len - 1))
+              for i in range(win_len)]
+
+    total = int(len(samples) * rate) + win_len
+    acc = [0.0] * total
+    weight = [0.0] * total
+    ana = syn = 0
+    predicted = None
+
+    while ana + win_len + search < len(samples) and syn + win_len < total:
+        if predicted is None:
+            best = ana
+        else:
+            best, best_score = ana, None
+            for offset in range(-search, search + 1):
+                pos = ana + offset
+                if pos < 0 or pos + win_len > len(samples):
+                    continue
+                # Stride 4: the correlation only has to rank candidates, but
+                # too coarse a stride aliases and picks the wrong alignment.
+                score = sum(samples[pos + i] * predicted[i]
+                            for i in range(0, win_len, 4))
+                if best_score is None or score > best_score:
+                    best_score, best = score, pos
+        for i in range(win_len):
+            acc[syn + i] += samples[best + i] * window[i]
+            weight[syn + i] += window[i]
+        tail = best + syn_hop
+        predicted = samples[tail:tail + win_len]
+        if len(predicted) < win_len:
+            break
+        ana += ana_hop
+        syn += syn_hop
+
+    out = array.array('h', bytes(2 * syn))
+    for i in range(syn):
+        value = acc[i] / weight[i] if weight[i] > 1e-6 else 0.0
+        out[i] = max(-32768, min(32767, int(value)))
     return out
 
 

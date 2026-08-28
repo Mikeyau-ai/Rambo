@@ -113,6 +113,20 @@ def publish(tag, assets):
     notes = build_notes(tag)
 
     if run(['release', 'view', tag]).returncode == 0:
+        # Re-publishing an existing tag uploads new assets but leaves the tag
+        # where it was, so the tag can end up describing a different commit
+        # from the build people actually download. Say so rather than let the
+        # two drift apart silently.
+        pointed = subprocess.run(['git', 'rev-parse', tag + '^{commit}'],
+                                 capture_output=True, text=True)
+        head = subprocess.run(['git', 'rev-parse', 'HEAD'],
+                              capture_output=True, text=True)
+        if pointed.returncode == 0 and pointed.stdout.strip() != head.stdout.strip():
+            print(f"  WARNING: {tag} points at {pointed.stdout.strip()[:8]} but "
+                  f"HEAD is {head.stdout.strip()[:8]}.")
+            print(f"           The uploaded build will not match the tag. Either")
+            print(f"           bump APP_VERSION, or move the tag deliberately:")
+            print(f"             git tag -f {tag} && git push -f origin {tag}")
         print(f"  Release {tag} already exists — updating assets and notes")
         uploaded = run(['release', 'upload', tag, *assets, '--clobber'])
         edited = run(['release', 'edit', tag, '--notes', notes])
